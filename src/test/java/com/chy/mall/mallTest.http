@@ -1,0 +1,16 @@
+###
+GET http://localhost:8081/products/page?page=1&size=10
+Authorization: Basic user 7fd6239d-2232-4441-b69f-f5729642f7e7
+
+###
+GET http://localhost:8081/products/page?page=1&size=10&keyword=键盘&status=ON_SALE
+Authorization: Basic user 7fd6239d-2232-4441-b69f-f5729642f7e7
+
+### 查询上架的键盘商品
+GET http://localhost:8081/products/page?page=1&size=10&keyword=键盘&status=ON_SALE
+Authorization: Basic user 7fd6239d-2232-4441-b69f-f5729642f7e7
+Accept: application/json
+
+###
+GET http://localhost:8081/products/page?page=1&size=10&sku=DEMO-PAGE-20261003-a4dc98-001
+Authorization: Basic user 7fd6239d-2232-4441-b69f-f5729642f7e7
