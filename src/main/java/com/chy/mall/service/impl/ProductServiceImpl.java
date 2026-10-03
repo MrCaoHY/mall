@@ -1,6 +1,8 @@
 package com.chy.mall.service.impl;
 
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.chy.mall.dto.CreateProductRequest;
 import com.chy.mall.dto.ProductPageQuery;
 import com.chy.mall.entity.ProductDo;
@@ -82,20 +84,29 @@ public class ProductServiceImpl implements ProductService {
     @Override
     @Transactional(readOnly = true)
     public PageVo<ProductVo> page(ProductPageQuery query) {
-        // 一次查询总数；在做乘法前转为long，避免大页码发生int溢出。
-        long total = productMapper.countForPage(query);
-        long offset = ((long) query.getPage() - 1) * query.getSize();
+        String keywordPattern = query.getKeywordPattern();
+        String sku = query.getSkuFilter();
+        LambdaQueryWrapper<ProductDo> wrapper = Wrappers.<ProductDo>lambdaQuery()
+                // 将名称或SKU匹配放在同一个括号中，再与其他筛选条件用AND连接。
+                .and(keywordPattern != null, condition -> condition
+                        // 保留字面搜索%/_/!的规则，{0}由Wrapper绑定为参数。
+                        .apply("name LIKE {0} ESCAPE '!'", keywordPattern)
+                        .or()
+                        .apply("sku LIKE {0} ESCAPE '!'", keywordPattern))
+                .eq(sku != null, ProductDo::getSku, sku)
+                .eq(query.getStatus() != null, ProductDo::getStatus, query.getStatus())
+                .orderByDesc(ProductDo::getCreatedAt, ProductDo::getId);
+
+        // 分页插件根据同一Wrapper查询总数并生成LIMIT/OFFSET。
+        Page<ProductDo> productPage = productMapper.selectPage(
+                new Page<>(query.getPage(), query.getSize()), wrapper);
         PageVo<ProductVo> pageVo = new PageVo<>();
         pageVo.setPage(query.getPage());
         pageVo.setSize(query.getSize());
-        pageVo.setTotal(total);
+        pageVo.setTotal(productPage.getTotal());
 
-        // 无匹配或超出末页，直接返回空数组，不发出无意义的记录/库存查询。
-        if (total == 0 || offset >= total) {
-            return pageVo;
-        }
-
-        List<ProductDo> products = productMapper.selectForPage(query, offset);
+        List<ProductDo> products = productPage.getRecords();
+        // 无匹配或超过末页时，不查询库存，避免生成空IN。
         if (products.isEmpty()) {
             return pageVo;
         }
