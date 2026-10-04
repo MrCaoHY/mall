@@ -1,6 +1,10 @@
 spring:
   application:
     name: mall
+  # 当前学习阶段用数值用户名表示买家ID；以后接入真实用户表后替换。
+  security:
+    user:
+      name: ${SECURITY_USER_NAME:1}
   datasource:
     driver-class-name: com.mysql.cj.jdbc.Driver
     url: "jdbc:mysql://${DB_HOST:192.168.5.29}:${DB_PORT:3306}/mall?serverTimezone=Asia/Shanghai&characterEncoding=UTF-8"

@@ -40,6 +40,7 @@ public class OrderDo {
     /** 主动取消时间，未取消时为 null。 */
     private LocalDateTime cancelledAt;
 
+
     /** 创建时间，由数据库默认值生成。 */
     private LocalDateTime createdAt;
 

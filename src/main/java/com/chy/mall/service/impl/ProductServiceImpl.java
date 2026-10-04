@@ -8,14 +8,15 @@ import com.chy.mall.dto.ProductPageQuery;
 import com.chy.mall.entity.ProductDo;
 import com.chy.mall.entity.ProductInventoryDo;
 import com.chy.mall.enums.ProductStatus;
-import com.chy.mall.exception.ProductInventoryMissingException;
-import com.chy.mall.exception.ProductNotFoundException;
+import com.chy.mall.exception.BusinessException;
+import com.chy.mall.exception.ErrorCode;
 import com.chy.mall.mapper.ProductInventoryMapper;
 import com.chy.mall.mapper.ProductMapper;
 import com.chy.mall.service.ProductService;
 import com.chy.mall.vo.PageVo;
 import com.chy.mall.vo.ProductVo;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -25,6 +26,7 @@ import java.util.stream.Collectors;
 
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class ProductServiceImpl implements ProductService {
     private final ProductMapper productMapper;
     private final ProductInventoryMapper productInventoryMapper;
@@ -68,14 +70,15 @@ public class ProductServiceImpl implements ProductService {
         // 先查商品；不存在时直接结束，不继续查询库存。
         ProductDo product = productMapper.selectById(productId);
         if (product == null) {
-            throw new ProductNotFoundException(productId);
+            throw new BusinessException(ErrorCode.PRODUCT_NOT_FOUND);
         }
 
         // 库存表的主键就是商品ID，因此可直接按主键查询，无需遍历或额外筛选。
         ProductInventoryDo inventory = productInventoryMapper.selectById(product.getId());
         if (inventory == null) {
             // 缺少库存记录是数据完整性问题，不能伪装成合法的库存0。
-            throw new ProductInventoryMissingException(product.getId());
+            log.error("商品存在但库存记录缺失，productId={}", product.getId());
+            throw new BusinessException(ErrorCode.PRODUCT_INVENTORY_MISSING);
         }
 
         return toProductVo(product, inventory);
@@ -123,7 +126,8 @@ public class ProductServiceImpl implements ProductService {
         List<ProductVo> records = products.stream().map(product -> {
             ProductInventoryDo inventory = inventoryByProductId.get(product.getId());
             if (inventory == null) {
-                throw new ProductInventoryMissingException(product.getId());
+                log.error("商品存在但库存记录缺失，productId={}", product.getId());
+                throw new BusinessException(ErrorCode.PRODUCT_INVENTORY_MISSING);
             }
             return toProductVo(product, inventory);
         }).toList();

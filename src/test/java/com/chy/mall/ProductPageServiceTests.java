@@ -8,7 +8,8 @@ import com.chy.mall.dto.ProductPageQuery;
 import com.chy.mall.entity.ProductDo;
 import com.chy.mall.entity.ProductInventoryDo;
 import com.chy.mall.enums.ProductStatus;
-import com.chy.mall.exception.ProductInventoryMissingException;
+import com.chy.mall.exception.BusinessException;
+import com.chy.mall.exception.ErrorCode;
 import com.chy.mall.mapper.ProductInventoryMapper;
 import com.chy.mall.mapper.ProductMapper;
 import com.chy.mall.service.impl.ProductServiceImpl;
@@ -121,17 +122,17 @@ class ProductPageServiceTests {
     }
 
     @Test
-    void pageWithMissingInventoryReportsTheAffectedProductId() {
+    void pageWithMissingInventoryThrowsBusinessException() {
         ProductPageQuery query = query(1, 10);
         ProductDo first = product(31L, "SKU-FIRST", "第一件商品", "12.30", ProductStatus.ON_SALE);
         ProductDo missing = product(14L, "SKU-MISSING", "缺库存商品", "98.76", ProductStatus.OFF_SALE);
         stubPage(2L, List.of(first, missing));
         when(inventoryMapper.selectList(anyInventoryWrapper())).thenReturn(List.of(inventory(31L, 5)));
 
-        ProductInventoryMissingException exception = assertThrows(
-                ProductInventoryMissingException.class, () -> service.page(query));
+        BusinessException exception = assertThrows(
+                BusinessException.class, () -> service.page(query));
 
-        assertEquals(Long.valueOf(14L), exception.getProductId());
+        assertEquals(ErrorCode.PRODUCT_INVENTORY_MISSING, exception.getErrorCode());
         verifyProductPage(query);
         verify(inventoryMapper).selectList(anyInventoryWrapper());
         verifyNoMoreInteractions(productMapper, inventoryMapper);
