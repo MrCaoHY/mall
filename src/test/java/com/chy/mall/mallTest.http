@@ -14,3 +14,26 @@ Accept: application/json
 ###
 GET http://localhost:8081/products/page?page=1&size=10&sku=DEMO-PAGE-20261003-a4dc98-001
 Authorization: Basic user 7fd6239d-2232-4441-b69f-f5729642f7e7
+###
+# 创建订单：当前暂停Security，直接运行此请求。
+POST http://localhost:8081/orders/create
+Content-Type: application/json
+Accept: application/json
+
+{
+  "items": [
+    {"productId": 8, "quantity": 18},
+    {"productId": 7, "quantity": 2}
+  ]
+}
+
+###
+POST http://localhost:8081/products/create
+Content-Type: application/json
+
+{
+  "sku": "CONCURRENCY-20261006-01",
+  "name": "并发库存测试商品",
+  "price": 1.00,
+  "initialStock": 1
+}
