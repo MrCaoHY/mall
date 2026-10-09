@@ -45,13 +45,11 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-restclient</artifactId>
         </dependency>
-        <!-- 暂停应用Security依赖，等实现权限模块时恢复。 -->
-        <!--
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-security</artifactId>
         </dependency>
-        -->
+
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-webmvc</artifactId>

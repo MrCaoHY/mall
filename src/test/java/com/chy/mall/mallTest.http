@@ -37,3 +37,12 @@ Content-Type: application/json
   "price": 1.00,
   "initialStock": 1
 }
+###
+# @no-cookie-jar
+POST http://localhost:8081/users/register
+Content-Type: application/json
+
+{
+  "username": "zhangsan",
+  "password": "12345678"
+}
