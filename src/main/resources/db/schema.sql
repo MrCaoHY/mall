@@ -76,3 +76,16 @@ CREATE TABLE order_items(
     UNIQUE KEY uk_order_items_order_product (order_id, product_id)
 
 )ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='订单明细及商品快照表';
+
+
+CREATE TABLE users
+(
+    id         BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT '用户主键',
+    username   VARCHAR(32)  NOT NULL COMMENT '登录用户名，唯一',
+    password   VARChAR(255) NOT NULL COMMENT '密码编码值，由PasswordEncoder生成',
+    role       VARCHAR(20)  NOT NULL DEFAULT 'USER' COMMENT '用户角色：USER普通用户、ADMIN管理员',
+    enabled    TINYINT               DEFAULT 1 COMMENT '账号启用状态：1启用、0禁用',
+    created_at DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    updated_at DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '最后更新时间',
+    UNIQUE KEY uk_users_username (username)
+)ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='用户表';
