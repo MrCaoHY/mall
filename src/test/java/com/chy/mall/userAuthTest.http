@@ -1,0 +1,310 @@
+# IntelliJ IDEA HTTP Client：启动mall后，按编号点击每个请求旁的运行按钮。
+# 先确认应用已设置JWT_SECRET环境变量；baseUrl按实际地址修改。
+# 01会创建一轮新的测试用户名并清空旧Token；后续请求复用同一用户名。
+# 11之后需要手动设置测试管理员角色，16之前需要手动禁用测试用户。
+# 因为有手动准备步骤，不要直接运行整个文件。
+# 执行成功的注册、商品创建、下单会真实写入数据库，HTTP测试不会自动回滚。
+@baseUrl = http://localhost:8081
+@testPassword = HttpTest123!
+
+### 01 注册普通用户：期望201、code=0、role=USER、enabled=true
+< {%
+    const suffix = Date.now().toString(36);
+    client.global.set("mallAuthUsername", "auth_" + suffix);
+    client.global.set("mallAuthMissingUsername", "missing_" + suffix);
+    client.global.set("mallAuthAdminUsername", "admin_" + suffix);
+    client.global.set("mallAuthSku", "AUTH-" + suffix);
+    client.global.set("mallAuthUserToken", "");
+    client.global.set("mallAuthAdminToken", "");
+    client.global.set("mallAuthUserId", "");
+    client.global.set("mallAuthAdminId", "");
+    client.global.set("mallAuthProductId", "");
+    client.global.set("mallAuthOrderId", "");
+%}
+# @no-cookie-jar
+POST {{baseUrl}}/users/register
+Content-Type: application/json
+Accept: application/json
+
+{"username": "{{mallAuthUsername}}", "password": "{{testPassword}}"}
+
+> {%
+    client.test("普通用户注册成功且不暴露密码", function () {
+        client.assert(response.status === 201, "期望HTTP 201，实际：" + response.status);
+        client.assert(response.body.code === 0, "期望code=0");
+        const user = response.body.data;
+        client.assert(user.id > 0, "应返回数据库生成的用户ID");
+        client.assert(user.role === "USER" && user.enabled === true, "应默认USER且启用");
+        client.assert(!("password" in user), "响应不能包含password");
+    });
+    if (response.status === 201 && response.body.code === 0 && response.body.data) {
+        client.global.set("mallAuthUserId", response.body.data.id);
+    }
+%}
+
+### 02 重复注册同一用户名：期望409、code=40902
+# @no-cookie-jar
+POST {{baseUrl}}/users/register
+Content-Type: application/json
+Accept: application/json
+
+{"username": "{{mallAuthUsername}}", "password": "{{testPassword}}"}
+
+> {%
+    client.test("重复用户名返回业务冲突", function () {
+        client.assert(response.status === 409, "期望HTTP 409，实际：" + response.status);
+        client.assert(response.body.code === 40902 && response.body.data === null, "期望40902且data=null");
+    });
+%}
+
+### 03 注册参数校验：空用户名，期望400、code=40001
+# @no-cookie-jar
+POST {{baseUrl}}/users/register
+Content-Type: application/json
+Accept: application/json
+
+{"username": "", "password": "{{testPassword}}"}
+
+> {%
+    client.test("参数校验生效", function () {
+        client.assert(response.status === 400, "期望HTTP 400，实际：" + response.status);
+        client.assert(response.body.code === 40001, "期望40001");
+    });
+%}
+
+### 04 用户不存在：期望401、code=40101
+# @no-cookie-jar
+POST {{baseUrl}}/users/login
+Content-Type: application/json
+Accept: application/json
+
+{"username": "{{mallAuthMissingUsername}}", "password": "{{testPassword}}"}
+
+> {%
+    client.test("不存在的用户返回统一凭据错误", function () {
+        client.assert(response.status === 401, "期望HTTP 401，实际：" + response.status);
+        client.assert(response.body.code === 40101 && response.body.message === "用户名或密码错误", "期望统一凭据错误");
+    });
+%}
+
+### 05 密码错误：期望401、code=40101
+# @no-cookie-jar
+POST {{baseUrl}}/users/login
+Content-Type: application/json
+Accept: application/json
+
+{"username": "{{mallAuthUsername}}", "password": "WrongPassword123!"}
+
+> {%
+    client.test("错误密码与不存在用户使用相同错误", function () {
+        client.assert(response.status === 401, "期望HTTP 401，实际：" + response.status);
+        client.assert(response.body.code === 40101 && response.body.message === "用户名或密码错误", "期望统一凭据错误");
+    });
+%}
+
+### 06 普通用户登录：期望200，自动保存USER Token
+< {%
+    client.global.set("mallAuthUserToken", "");
+%}
+# @no-cookie-jar
+POST {{baseUrl}}/users/login
+Content-Type: application/json
+Accept: application/json
+
+{"username": "{{mallAuthUsername}}", "password": "{{testPassword}}"}
+
+> {%
+    client.test("登录返回JWT和正确用户信息", function () {
+        client.assert(response.status === 200, "期望HTTP 200，实际：" + response.status);
+        client.assert(response.body.code === 0, "期望code=0");
+        const data = response.body.data;
+        client.assert(typeof data.token === "string" && data.token.split(".").length === 3, "应返回三段JWT");
+        client.assert(String(data.user.id) === String(client.global.get("mallAuthUserId")), "登录ID应等于注册ID");
+        client.assert(data.user.role === "USER", "应登录为USER");
+        client.assert(!("password" in data.user), "登录响应不能包含password");
+    });
+    if (response.status === 200 && response.body.code === 0 && response.body.data && response.body.data.user.role === "USER") {
+        client.global.set("mallAuthUserToken", response.body.data.token);
+    }
+%}
+
+### 07 未登录查询商品：期望200
+# @no-cookie-jar
+GET {{baseUrl}}/products/page?page=1&size=10
+Accept: application/json
+
+> {%
+    client.test("商品查询公开", function () {
+        client.assert(response.status === 200 && response.body.code === 0, "未登录查询商品应成功");
+    });
+%}
+
+### 08 未登录下单：期望401、code=40102，不应进入下单业务
+# @no-cookie-jar
+POST {{baseUrl}}/orders/create
+Content-Type: application/json
+Accept: application/json
+
+{"items": [{"productId": 1, "quantity": 1}]}
+
+> {%
+    client.test("未登录请求使用统一JSON 401", function () {
+        client.assert(response.status === 401, "期望HTTP 401，实际：" + response.status);
+        client.assert(response.body.code === 40102 && response.body.data === null, "期望40102且data=null");
+    });
+%}
+
+### 09 无效Token下单：期望401、code=40102，不应进入下单业务
+# @no-cookie-jar
+POST {{baseUrl}}/orders/create
+Authorization: Bearer invalid.jwt.token
+Content-Type: application/json
+Accept: application/json
+
+{"items": [{"productId": 1, "quantity": 1}]}
+
+> {%
+    client.test("无效JWT不能建立认证", function () {
+        client.assert(response.status === 401, "期望HTTP 401，实际：" + response.status);
+        client.assert(response.body.code === 40102, "期望40102");
+    });
+%}
+
+### 10 USER创建商品：期望403、code=40303，不应创建商品
+# @no-cookie-jar
+POST {{baseUrl}}/products/create
+Authorization: Bearer {{mallAuthUserToken}}
+Content-Type: application/json
+Accept: application/json
+
+{"sku": "{{mallAuthSku}}-DENIED", "name": "权限拒绝测试商品", "price": 9.90, "initialStock": 5}
+
+> {%
+    client.test("USER不能执行管理员操作", function () {
+        client.assert(response.status === 403, "期望HTTP 403，实际：" + response.status);
+        client.assert(response.body.code === 40303 && response.body.data === null, "期望40303且data=null");
+    });
+%}
+
+### 11 注册独立的测试管理员候选账号：此时仍然是USER
+# @no-cookie-jar
+POST {{baseUrl}}/users/register
+Content-Type: application/json
+Accept: application/json
+
+{"username": "{{mallAuthAdminUsername}}", "password": "{{testPassword}}"}
+
+> {%
+    client.test("注册不能直接获得ADMIN", function () {
+        client.assert(response.status === 201 && response.body.code === 0, "候选账号注册应成功");
+        client.assert(response.body.data.role === "USER", "注册账号仍应是USER");
+    });
+    if (response.status === 201 && response.body.code === 0 && response.body.data) {
+        client.global.set("mallAuthAdminId", response.body.data.id);
+        client.log("下一步在mall数据库手动执行：UPDATE users SET role = 'ADMIN' WHERE id = " + response.body.data.id + ";");
+    }
+%}
+
+### 12 完成11响应脚本输出的角色修改SQL后，再登录管理员
+# 只修改刚注册的候选账号。注册接口不会接受客户端role。
+# 登录必须在角色修改之后执行，新JWT才能带ADMIN角色。
+< {%
+    client.global.set("mallAuthAdminToken", "");
+%}
+# @no-cookie-jar
+POST {{baseUrl}}/users/login
+Content-Type: application/json
+Accept: application/json
+
+{"username": "{{mallAuthAdminUsername}}", "password": "{{testPassword}}"}
+
+> {%
+    client.test("管理员登录返回ADMIN", function () {
+        client.assert(response.status === 200 && response.body.code === 0, "管理员登录应成功");
+        client.assert(response.body.data.user.role === "ADMIN", "请先完成11之后的管理员角色SQL");
+        client.assert(String(response.body.data.user.id) === String(client.global.get("mallAuthAdminId")), "管理员ID应为候选账号ID");
+    });
+    if (response.status === 200 && response.body.code === 0 && response.body.data && response.body.data.user.role === "ADMIN") {
+        client.global.set("mallAuthAdminToken", response.body.data.token);
+    }
+%}
+
+### 13 ADMIN创建测试商品：期望201，自动保存商品ID
+< {%
+    client.global.set("mallAuthProductId", "");
+%}
+# @no-cookie-jar
+POST {{baseUrl}}/products/create
+Authorization: Bearer {{mallAuthAdminToken}}
+Content-Type: application/json
+Accept: application/json
+
+{"sku": "{{mallAuthSku}}", "name": "JWT接口测试商品", "price": 9.90, "initialStock": 5}
+
+> {%
+    client.test("ADMIN可以创建商品", function () {
+        client.assert(response.status === 201 && response.body.code === 0, "管理员创建商品应成功");
+        client.assert(response.body.data.id > 0 && response.body.data.stock === 5, "应返回商品ID和初始库存5");
+    });
+    if (response.status === 201 && response.body.code === 0 && response.body.data) {
+        client.global.set("mallAuthProductId", response.body.data.id);
+    }
+%}
+
+### 14 USER携带Token下单：期望201，购买1件
+# 重复执行会产生新订单并再次扣库存。此接口目前尚无幂等功能。
+< {%
+    client.global.set("mallAuthOrderId", "");
+%}
+# @no-cookie-jar
+POST {{baseUrl}}/orders/create
+Authorization: Bearer {{mallAuthUserToken}}
+Content-Type: application/json
+Accept: application/json
+
+{"items": [{"productId": {{mallAuthProductId}}, "quantity": 1}]}
+
+> {%
+    client.test("USER可以创建订单", function () {
+        client.assert(response.status === 201 && response.body.code === 0, "普通用户下单应成功");
+        const order = response.body.data;
+        client.assert(order.id > 0 && order.status === "PENDING_PAYMENT", "应创建待支付订单");
+        client.assert(Number(order.totalAmount) === 9.90, "订单总价应为9.90");
+    });
+    if (response.status === 201 && response.body.code === 0 && response.body.data) {
+        client.global.set("mallAuthOrderId", response.body.data.id);
+        client.log("手动核对订单归属：SELECT id, buyer_id FROM orders WHERE id = " + response.body.data.id + ";");
+        client.log("buyer_id应等于普通用户ID：" + client.global.get("mallAuthUserId"));
+    }
+%}
+
+### 15 下单后查询库存：期望4，仅在14成功执行一次后运行
+# @no-cookie-jar
+GET {{baseUrl}}/products/{{mallAuthProductId}}
+Accept: application/json
+
+> {%
+    client.test("下单扣减库存1件", function () {
+        client.assert(response.status === 200 && response.body.code === 0, "商品详情应查询成功");
+        client.assert(response.body.data.stock === 4, "初始5件，首次下单后应剩4件");
+    });
+    client.log("如要执行16，请在mall数据库手动执行：UPDATE users SET enabled = 0 WHERE id = " + client.global.get("mallAuthUserId") + ";");
+%}
+
+### 16 可选：手动禁用本轮普通测试账号后再登录，期望403、code=40302
+# 只测试禁止新登录，不证明已经签发的JWT会立即失效。
+# 执行完成后，可手动把这个测试账号enabled恢复为1。
+# @no-cookie-jar
+POST {{baseUrl}}/users/login
+Content-Type: application/json
+Accept: application/json
+
+{"username": "{{mallAuthUsername}}", "password": "{{testPassword}}"}
+
+> {%
+    client.test("禁用账号不能重新登录", function () {
+        client.assert(response.status === 403, "期望HTTP 403，请先禁用本轮测试账号");
+        client.assert(response.body.code === 40302 && response.body.data === null, "期望40302且data=null");
+    });
+    client.log("恢复本轮测试账号：UPDATE users SET enabled = 1 WHERE id = " + client.global.get("mallAuthUserId") + ";");
+%}

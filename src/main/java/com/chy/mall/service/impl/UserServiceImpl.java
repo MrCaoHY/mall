@@ -1,5 +1,6 @@
 package com.chy.mall.service.impl;
 
+import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.chy.mall.dto.LoginUserRequest;
 import com.chy.mall.dto.RegisterUserRequest;
 import com.chy.mall.entity.UserDo;
@@ -8,6 +9,7 @@ import com.chy.mall.exception.BusinessException;
 import com.chy.mall.exception.ErrorCode;
 import com.chy.mall.mapper.UserMapper;
 import com.chy.mall.service.UserService;
+import com.chy.mall.util.JwtUtil;
 import com.chy.mall.vo.LoginVo;
 import com.chy.mall.vo.UserVo;
 import lombok.RequiredArgsConstructor;
@@ -22,6 +24,7 @@ import java.nio.charset.StandardCharsets;
 public class UserServiceImpl implements UserService {
     private final UserMapper userMapper;
     private final PasswordEncoder passwordEncoder;
+    private final JwtUtil jwtUtil;
 
     @Override
     public UserVo register(RegisterUserRequest request) {
@@ -55,6 +58,30 @@ public class UserServiceImpl implements UserService {
 
     @Override
     public LoginVo login(LoginUserRequest request) {
-        throw new UnsupportedOperationException("待实现用户登录");
+        String rawPassword = request.getPassword();
+        if (rawPassword.getBytes(StandardCharsets.UTF_8).length > 72) {
+            throw new BusinessException(ErrorCode.LOGIN_CREDENTIALS_INVALID);
+        }
+        UserDo user = userMapper.selectOne(Wrappers.<UserDo>lambdaQuery().eq(UserDo::getUsername, request.getUsername()));
+        if (user == null || !passwordEncoder.matches(request.getPassword(), user.getPassword())) {
+            throw new BusinessException(ErrorCode.LOGIN_CREDENTIALS_INVALID);
+        }
+        if (!Boolean.TRUE.equals(user.getEnabled())) {
+            throw new BusinessException(ErrorCode.ACCOUNT_DISABLED);
+        }
+        String token = jwtUtil.generateToken(user.getId(), user.getUsername(), user.getRole());
+        LoginVo loginVo = new LoginVo();
+        loginVo.setToken(token);
+        loginVo.setUser(userDoToVo(user));
+        return loginVo;
+    }
+
+    private UserVo userDoToVo(UserDo userDo) {
+        UserVo userVo = new UserVo();
+        userVo.setId(userDo.getId());
+        userVo.setUsername(userDo.getUsername());
+        userVo.setRole(userDo.getRole());
+        userVo.setEnabled(userDo.getEnabled());
+        return userVo;
     }
 }

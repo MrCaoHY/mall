@@ -1,8 +1,10 @@
 package com.chy.mall.control;
 
 import com.chy.mall.common.ApiResponse;
+import com.chy.mall.dto.LoginUserRequest;
 import com.chy.mall.dto.RegisterUserRequest;
 import com.chy.mall.service.UserService;
+import com.chy.mall.vo.LoginVo;
 import com.chy.mall.vo.UserVo;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -29,5 +31,10 @@ public class UserController {
     public ResponseEntity<ApiResponse<UserVo>> register(@Valid @RequestBody RegisterUserRequest request) {
         UserVo user = userService.register(request);
         return ResponseEntity.status(HttpStatus.CREATED).body(ApiResponse.success(user));
+    }
+
+    @PostMapping("/login")
+    public ResponseEntity<ApiResponse<LoginVo>> login(@Valid @RequestBody LoginUserRequest request) {
+        return ResponseEntity.status(HttpStatus.OK).body(ApiResponse.success(userService.login(request)));
     }
 }

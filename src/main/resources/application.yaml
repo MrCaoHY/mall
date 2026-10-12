@@ -10,5 +10,8 @@ spring:
     url: "jdbc:mysql://${DB_HOST:192.168.5.29}:${DB_PORT:3306}/mall?serverTimezone=Asia/Shanghai&characterEncoding=UTF-8"
     username: ${DB_USERNAME:root}
     password: ${DB_PASSWORD:mysql}
+jwt:
+  secret: ${JWT_SECRET}
+  expiration: ${JWT_EXPIRATION:2h}
 server:
   port: 8081
