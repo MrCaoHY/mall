@@ -74,6 +74,7 @@ public class OrderCreateRollbackTest {
             item.setProductId(productId);
             item.setQuantity(2);
             CreateOrderRequest request = new CreateOrderRequest();
+            request.setRequestId(UUID.randomUUID().toString());
             request.setItems(List.of(item));
 
             doAnswer(invocation -> {

@@ -25,6 +25,12 @@ public class OrderDo {
     /** 购买用户 ID，由后续服务从已认证身份中取得。 */
     private Long buyerId;
 
+    /** 客户端一次下单意图的请求号。 */
+    private String requestId;
+
+    /** 商品 ID 与数量规范化后生成的 SHA-256 指纹。 */
+    private String requestFingerprint;
+
     /** 订单状态，保存枚举名称，例如 PENDING_PAYMENT。 */
     private OrderStatus status;
 

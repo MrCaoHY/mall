@@ -6,6 +6,9 @@
 # 执行成功的注册、商品创建、下单会真实写入数据库，HTTP测试不会自动回滚。
 @baseUrl = http://localhost:8081
 @testPassword = HttpTest123!
+@existingUsername = {{mallExistingUsername}}
+@existingPassword = {{mallExistingPassword}}
+# 已有用户凭据保存在同目录http-client.private.env.json，运行已有用户登录时选择local环境。
 
 ### 01 注册普通用户：期望201、code=0、role=USER、enabled=true
 < {%
@@ -308,3 +311,37 @@ Accept: application/json
     });
     client.log("恢复本轮测试账号：UPDATE users SET enabled = 1 WHERE id = " + client.global.get("mallAuthUserId") + ";");
 %}
+
+
+
+### 已有用户登录：选择local私有环境，成功后保存下单Token
+< {%
+    client.global.set("mallAuthUserToken", "");
+    client.global.set("mallAuthUserId", "");
+%}
+
+# @no-cookie-jar
+POST {{baseUrl}}/users/login
+Content-Type: application/json
+Accept: application/json
+
+{"username": "{{existingUsername}}", "password": "{{existingPassword}}"}
+
+> {%
+    if (response.status === 200 && response.body.code === 0 && response.body.data && response.body.data.token && response.body.data.user) {
+        client.global.set("mallAuthUserToken", response.body.data.token);
+        client.global.set("mallAuthUserId", response.body.data.user.id);
+    }
+%}
+
+### 幂等测试：相同请求连续发送两次
+POST {{baseUrl}}/orders/create
+Authorization: Bearer {{mallAuthUserToken}}
+Content-Type: application/json
+
+{
+  "requestId": "c60cdfc6-ddb3-4674-bbce-523a9a20dfa8",
+  "items": [
+    {"productId": 8, "quantity": 1}
+  ]
+}

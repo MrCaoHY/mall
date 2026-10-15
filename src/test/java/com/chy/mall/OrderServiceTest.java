@@ -15,6 +15,7 @@ import com.chy.mall.mapper.OrderItemMapper;
 import com.chy.mall.mapper.OrderMapper;
 import com.chy.mall.mapper.ProductInventoryMapper;
 import com.chy.mall.mapper.ProductMapper;
+import com.chy.mall.service.impl.OrderCreateTransactionService;
 import com.chy.mall.service.impl.OrderServiceImpl;
 import com.chy.mall.vo.OrderItemVo;
 import com.chy.mall.vo.OrderVo;
@@ -25,6 +26,7 @@ import org.mockito.ArgumentCaptor;
 
 import java.math.BigDecimal;
 import java.util.List;
+import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -45,7 +47,8 @@ public class OrderServiceTest {
     private final OrderMapper orderMapper = mock(OrderMapper.class);
     private final OrderItemMapper orderItemMapper = mock(OrderItemMapper.class);
 
-    private final OrderServiceImpl service = new OrderServiceImpl(inventoryMapper, productMapper, orderMapper, orderItemMapper);
+    private final OrderCreateTransactionService transactionService = new OrderCreateTransactionService(inventoryMapper, productMapper, orderMapper, orderItemMapper);
+    private final OrderServiceImpl service = new OrderServiceImpl(orderMapper, orderItemMapper, transactionService);
 
     @BeforeAll
     static void initializeInventoryMapping() {
@@ -92,6 +95,7 @@ public class OrderServiceTest {
         assertItem(result.getItems().get(1), 20L, "SKU-20", "机械键盘", "12.50", 2, "25.00");
 
         ArgumentCaptor<OrderDo> orderCaptor = ArgumentCaptor.forClass(OrderDo.class);
+        verify(orderMapper).selectOne(any(Wrapper.class));
         verify(orderMapper).insert(orderCaptor.capture());
         OrderDo insertedOrder = orderCaptor.getValue();
         assertEquals(77L, insertedOrder.getBuyerId());
@@ -130,6 +134,7 @@ public class OrderServiceTest {
 
     private static CreateOrderRequest request(CreateOrderItemRequest... items) {
         CreateOrderRequest request = new CreateOrderRequest();
+        request.setRequestId(UUID.randomUUID().toString());
         request.setItems(List.of(items));
         return request;
     }

@@ -31,11 +31,13 @@ CREATE TABLE product_inventory (
   COLLATE=utf8mb4_general_ci
   COMMENT='商品库存表';
 
--- 订单主表：保存购买用户、订单状态、总金额及生命周期时间。
+-- 订单主表：保存购买用户、幂等请求标识、订单状态、总金额及生命周期时间。
 CREATE TABLE orders(
     id BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT '订单主键',
     order_no VARCHAR(32) NOT NULL COMMENT '业务订单号，由服务端生成，唯一',
     buyer_id BIGINT NOT NULL COMMENT '购买用户ID，由已认证身份取得',
+    request_id VARCHAR(64) NOT NULL COMMENT '客户端下单请求号',
+    request_fingerprint CHAR(64) NOT NULL COMMENT '下单请求内容SHA-256指纹',
     status VARCHAR(20) NOT NULL DEFAULT 'PENDING_PAYMENT' COMMENT '订单状态：PENDING_PAYMENT待支付、PAID已支付、CANCELLED已取消、CLOSED超时关闭',
     total_amount DECIMAL(18,2) NOT NULL COMMENT '订单总金额，由服务端汇总明细金额',
     expires_at DATETIME NOT NULL COMMENT '未支付订单的到期时间',
@@ -43,8 +45,9 @@ CREATE TABLE orders(
     cancelled_at DATETIME COMMENT '主动取消时间，未取消时为空',
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '最后更新时间',
-    -- 业务订单号不可重复；用户ID和订单总金额必须为正数。
+    -- 业务订单号不可重复；同一买家的同一请求号只能创建一笔订单；用户ID和订单总金额必须为正数。
     UNIQUE KEY uk_order_no (order_no),
+    UNIQUE KEY uk_orders_buyer_request (buyer_id,request_id),
     CONSTRAINT ck_order_buy_id check ( buyer_id > 0 ),
     CONSTRAINT ck_order_total_amount check (total_amount>0  ),
     -- 支持按用户筛选订单，并按创建时间、ID稳定排序。
