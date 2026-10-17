@@ -31,6 +31,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 // 加载真实应用：不Mock Service或Mapper，数据库连接来自application.yaml和环境变量。
+/**
+ * 商品创建HTTP适配测试，包含请求校验与持久化结果核对。
+ */
 @SpringBootTest
 @AutoConfigureMockMvc
 // 当前同步请求与Service共用测试事务，测试结束默认回滚，不保留测试商品和库存。

@@ -23,6 +23,9 @@ import static org.mockito.Mockito.*;
 
 import org.mockito.ArgumentCaptor;
 
+/**
+ * 商品创建单元测试，验证商品与库存写入的调用及异常传播。
+ */
 @ExtendWith(MockitoExtension.class)
 public class ProductCreateServiceTest {
     @Mock

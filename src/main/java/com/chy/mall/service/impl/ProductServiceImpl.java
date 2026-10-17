@@ -13,6 +13,7 @@ import com.chy.mall.exception.ErrorCode;
 import com.chy.mall.mapper.ProductInventoryMapper;
 import com.chy.mall.mapper.ProductMapper;
 import com.chy.mall.service.ProductService;
+import com.chy.mall.util.LogSupport;
 import com.chy.mall.vo.PageVo;
 import com.chy.mall.vo.ProductVo;
 import lombok.RequiredArgsConstructor;
@@ -24,6 +25,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 
+/**
+ * 商品与库存业务。写操作使用同一事务，读操作批量关联库存，避免N+1查询。
+ */
 @Service
 @RequiredArgsConstructor
 @Slf4j
@@ -46,6 +50,7 @@ public class ProductServiceImpl implements ProductService {
             throw new IllegalStateException("商品保存失败");
         }
 
+        LogSupport.transactionOutcome(log, "product_create", productDo.getId());
         ProductInventoryDo productInventoryDo = new ProductInventoryDo();
         productInventoryDo.setProductId(productDo.getId());
         productInventoryDo.setStock(request.getInitialStock());
@@ -77,10 +82,11 @@ public class ProductServiceImpl implements ProductService {
         ProductInventoryDo inventory = productInventoryMapper.selectById(product.getId());
         if (inventory == null) {
             // 缺少库存记录是数据完整性问题，不能伪装成合法的库存0。
-            log.error("商品存在但库存记录缺失，productId={}", product.getId());
+            log.error("event=inventory_record_missing productId={}", product.getId());
             throw new BusinessException(ErrorCode.PRODUCT_INVENTORY_MISSING);
         }
 
+        log.debug("event=product_detail_read productId={}", productId);
         return toProductVo(product, inventory);
     }
 
@@ -126,11 +132,12 @@ public class ProductServiceImpl implements ProductService {
         List<ProductVo> records = products.stream().map(product -> {
             ProductInventoryDo inventory = inventoryByProductId.get(product.getId());
             if (inventory == null) {
-                log.error("商品存在但库存记录缺失，productId={}", product.getId());
+                log.error("event=inventory_record_missing productId={}", product.getId());
                 throw new BusinessException(ErrorCode.PRODUCT_INVENTORY_MISSING);
             }
             return toProductVo(product, inventory);
         }).toList();
+        log.debug("event=product_page_read page={} size={} returnedCount={} total={}", query.getPage(), query.getSize(), records.size(), productPage.getTotal());
         pageVo.setRecords(records);
         return pageVo;
     }

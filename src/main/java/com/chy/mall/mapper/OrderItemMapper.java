@@ -14,6 +14,7 @@ import java.util.List;
 @Mapper
 public interface OrderItemMapper extends BaseMapper<OrderItemDo> {
 
+    /** 一条批量INSERT保存整笔订单快照；逐字段绑定参数，不拼接客户端输入。 */
     @Insert("""
         <script>
         INSERT INTO order_items

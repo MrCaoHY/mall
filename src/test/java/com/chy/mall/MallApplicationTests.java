@@ -9,6 +9,9 @@ import org.springframework.boot.test.context.SpringBootTest;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+/**
+ * 真实Spring上下文与Mapper连通性检查，依赖测试环境MySQL。
+ */
 @SpringBootTest
 class MallApplicationTests {
     // 注入真实Mapper，查询会访问配置的MySQL，而不是使用Mock。

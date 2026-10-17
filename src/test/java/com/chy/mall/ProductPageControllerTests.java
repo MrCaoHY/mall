@@ -30,6 +30,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 // 使用真实 Service、Mapper 和数据库；每次只创建并查询唯一 marker 对应的测试商品。
+/**
+ * 商品分页接口测试，验证参数绑定、筛选与分页返回结构。
+ */
 @SpringBootTest
 @AutoConfigureMockMvc
 // 同步 MockMvc 请求共用测试事务，结束时回滚 fixture；不清空表、不修改已有商品。

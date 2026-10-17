@@ -14,6 +14,9 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+/**
+ * 商品HTTP接口：绑定并校验请求，调用Service后封装响应；权限由Security链控制。
+ */
 @RestController
 @RequestMapping("/products")
 @RequiredArgsConstructor

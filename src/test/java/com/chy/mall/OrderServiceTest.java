@@ -41,6 +41,9 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
+/**
+ * 订单创建单元测试：用Mock隔离数据库，验证分支和调用；不能据此证明事务回滚。
+ */
 public class OrderServiceTest {
     private final ProductInventoryMapper inventoryMapper = mock(ProductInventoryMapper.class);
     private final ProductMapper productMapper = mock(ProductMapper.class);
@@ -48,7 +51,7 @@ public class OrderServiceTest {
     private final OrderItemMapper orderItemMapper = mock(OrderItemMapper.class);
 
     private final OrderCreateTransactionService transactionService = new OrderCreateTransactionService(inventoryMapper, productMapper, orderMapper, orderItemMapper);
-    private final OrderServiceImpl service = new OrderServiceImpl(orderMapper, orderItemMapper, transactionService);
+    private final OrderServiceImpl service = new OrderServiceImpl(orderMapper, orderItemMapper, inventoryMapper, transactionService);
 
     @BeforeAll
     static void initializeInventoryMapping() {

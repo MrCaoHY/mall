@@ -7,12 +7,17 @@ import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
 import lombok.Data;
 
+/**
+ * 商品分页筛选参数；控制分页范围，并把LIKE通配字符转成用户期望的字面搜索。
+ */
 @Data
 public class ProductPageQuery {
+    /** 页码从1开始，避免负数偏移。 */
     @NotNull(message = "页码不能为空")
     @Min(value = 1, message = "页码不能小于1")
     private Integer page = 1;
 
+    /** 每页最多100条，防止一次请求扫描并返回过多数据。 */
     @NotNull(message = "每页数量不能为空")
     @Min(value = 1, message = "每页数量不能小于1")
     @Max(value = 100, message = "每页数量不能超过100")

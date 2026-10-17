@@ -7,6 +7,9 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.Mockito.*;
 
 
+/**
+ * Mockito void方法练习：正常无返回值，失败使用doThrow模拟异常。
+ */
 public class MockitoVoidMethodTest {
     @Test
     void runThrowsConfiguredException() {

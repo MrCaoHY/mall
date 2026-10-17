@@ -36,6 +36,9 @@ import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
 // 只创建Service和两个Mapper的Mockito替身，不启动Spring，也不连接数据库。
+/**
+ * 商品分页单元测试，核对筛选Wrapper及批量库存关联。
+ */
 class ProductPageServiceTests {
     private final ProductMapper productMapper = mock(ProductMapper.class);
     private final ProductInventoryMapper inventoryMapper = mock(ProductInventoryMapper.class);

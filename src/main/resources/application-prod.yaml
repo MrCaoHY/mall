@@ -1,0 +1,10 @@
+# 使用SPRING_PROFILES_ACTIVE=prod启用；JSON控制台供容器或集中日志平台采集。
+logging:
+  structured:
+    format:
+      console: logstash
+  level:
+    root: INFO
+    com.chy.mall: INFO
+    org.springframework.web: WARN
+    org.springframework.security: WARN

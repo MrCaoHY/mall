@@ -7,6 +7,9 @@ import org.junit.jupiter.api.Test;
 
 import javax.crypto.SecretKey;
 
+/**
+ * 本地开发密钥生成工具；仅在受控本机运行，输出不能提交或上传到共享测试日志。
+ */
 public class CreateKey {
     @Test
     public void createKey(){

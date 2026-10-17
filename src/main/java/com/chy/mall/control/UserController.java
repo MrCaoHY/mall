@@ -33,6 +33,7 @@ public class UserController {
         return ResponseEntity.status(HttpStatus.CREATED).body(ApiResponse.success(user));
     }
 
+    /** 凭证通过后返回Token与用户公开信息，不在Controller输出请求或响应对象。 */
     @PostMapping("/login")
     public ResponseEntity<ApiResponse<LoginVo>> login(@Valid @RequestBody LoginUserRequest request) {
         return ResponseEntity.status(HttpStatus.OK).body(ApiResponse.success(userService.login(request)));

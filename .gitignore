@@ -43,3 +43,8 @@ dependency-reduced-pom.xml
 
 # Local HTTP Client credentials
 **/http-client.private.env.json
+
+# Application runtime logs
+logs/
+*.log
+*.log.*

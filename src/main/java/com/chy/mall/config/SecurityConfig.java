@@ -14,12 +14,16 @@ import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 
+/**
+ * 无状态安全链：公开注册/登录和商品查询，商品写入需ADMIN，订单操作必须登录。
+ */
 @Configuration
 @RequiredArgsConstructor
 public class SecurityConfig {
     private final JwtUtil jwtUtil;
     private final RestAuthenticationEntryPoint restAuthenticationEntryPoint;
     private final RestAccessDeniedHandler restAccessDeniedHandler;
+    /** JWT过滤器只注册到安全链；错误响应由认证入口和权限处理器统一输出。 */
     @Bean
     public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
         JwtAuthenticationFilter jwtFilter = new JwtAuthenticationFilter(jwtUtil);

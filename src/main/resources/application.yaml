@@ -1,10 +1,9 @@
 spring:
   application:
     name: mall
-  # 暂停Security，等实现权限模块时恢复以下开发账号配置。
-  # security:
-  #   user:
-  #     name: ${SECURITY_USER_NAME:1}
+  # Security已启用JWT认证；不要开启请求详情日志，避免凭据被框架输出。
+  mvc:
+    log-request-details: false
   datasource:
     driver-class-name: com.mysql.cj.jdbc.Driver
     url: "jdbc:mysql://${DB_HOST:192.168.5.29}:${DB_PORT:3306}/mall?serverTimezone=Asia/Shanghai&characterEncoding=UTF-8"
@@ -13,5 +12,34 @@ spring:
 jwt:
   secret: ${JWT_SECRET}
   expiration: ${JWT_EXPIRATION:2h}
+# 禁止MyBatis打印SQL实参，包括注册时的密码Hash和查询条件。
+mybatis-plus:
+  configuration:
+    log-impl: org.apache.ibatis.logging.nologging.NoLoggingImpl
 server:
   port: 8081
+  error:
+    include-message: never
+    include-binding-errors: never
+    include-stacktrace: never
+logging:
+  level:
+    root: INFO
+    com.chy.mall: ${MALL_LOG_LEVEL:INFO}
+    org.springframework.web: WARN
+    org.springframework.security: WARN
+  pattern:
+    # requestId是单次请求编号；userId只来自已经通过验签的身份。
+    level: "%5p [requestId=%X{requestId:-} userId=%X{userId:-}]"
+  file:
+    name: ${LOG_FILE:logs/mall.log}
+  structured:
+    format:
+      file: logstash
+  logback:
+    rollingpolicy:
+      file-name-pattern: "${LOG_FILE:logs/mall.log}.%d{yyyy-MM-dd}.%i.gz"
+      max-file-size: ${LOG_MAX_FILE_SIZE:50MB}
+      max-history: ${LOG_MAX_HISTORY:14}
+      total-size-cap: ${LOG_TOTAL_SIZE_CAP:1GB}
+      clean-history-on-start: true

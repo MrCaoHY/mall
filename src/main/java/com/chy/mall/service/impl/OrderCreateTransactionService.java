@@ -14,9 +14,11 @@ import com.chy.mall.mapper.OrderItemMapper;
 import com.chy.mall.mapper.OrderMapper;
 import com.chy.mall.mapper.ProductInventoryMapper;
 import com.chy.mall.mapper.ProductMapper;
+import com.chy.mall.util.LogSupport;
 import com.chy.mall.vo.OrderItemVo;
 import com.chy.mall.vo.OrderVo;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
@@ -30,8 +32,12 @@ import java.util.TreeMap;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
+/**
+ * 独立Bean承载新订单事务，唯一键裁决、库存扣减和明细保存一起提交；异常先回滚再交回入口。
+ */
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class OrderCreateTransactionService {
     private static final BigDecimal MAX_ORDER_AMOUNT = new BigDecimal("9999999999999999.99");
 
@@ -40,6 +46,7 @@ public class OrderCreateTransactionService {
     private final OrderMapper orderMapper;
     private final OrderItemMapper orderItemMapper;
 
+    /** 新事务先写订单主表竞争幂等唯一键，胜出后再扣库存和保存快照。 */
     @Transactional(propagation = Propagation.REQUIRES_NEW, rollbackFor = Exception.class)
     public OrderVo createNewOrder(Long buyerId, String requestId, String requestFingerprint, TreeMap<Long, Integer> orderProductMap) {
         // 一次查询全部商品，避免循环查询产生N+1问题。
@@ -106,10 +113,13 @@ public class OrderCreateTransactionService {
             throw new IllegalStateException("订单保存失败");
         }
 
+        // 回调在事务真正提交/回滚后记录结果，不能在return前声称创建成功。
+        LogSupport.transactionOutcome(log, "order_create", order.getId());
         // TreeMap保证不同订单以相同商品ID顺序加锁，降低并发死锁风险。
         for (Map.Entry<Long, Integer> entry : orderProductMap.entrySet()) {
             int affectedRows = deductStock(entry.getKey(), entry.getValue());
             if (affectedRows != 1) {
+                log.info("event=order_stock_rejected buyerId={} productId={}", buyerId, entry.getKey());
                 throw new BusinessException(ErrorCode.ORDER_CONFLICT,
                         "库存不足或库存记录不存在，商品ID：" + entry.getKey());
             }
@@ -133,6 +143,7 @@ public class OrderCreateTransactionService {
         return result;
     }
 
+    /** stock >= quantity与stock减法在同一UPDATE中执行，不能先查询库存再计算。 */
     private int deductStock(Long productId, Integer quantity) {
         if (productId == null || productId <= 0
                 || quantity == null || quantity <= 0) {
@@ -148,6 +159,7 @@ public class OrderCreateTransactionService {
         return productInventoryMapper.update(null, wrapper);
     }
 
+    /** 与数据库金额精度保持一致，逐行和累加后都检查，避免写库时溢出。 */
     private void checkAmountRange(BigDecimal amount, String message) {
         if (amount.signum() <= 0 || amount.compareTo(MAX_ORDER_AMOUNT) > 0) {
             throw new BusinessException(ErrorCode.REQUEST_INVALID, message);

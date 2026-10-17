@@ -13,19 +13,25 @@ import com.chy.mall.util.JwtUtil;
 import com.chy.mall.vo.LoginVo;
 import com.chy.mall.vo.UserVo;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 
 import java.nio.charset.StandardCharsets;
 
+/**
+ * 注册使用BCrypt存储密码，登录统一凭证错误提示；日志仅记录结果和用户ID。
+ */
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class UserServiceImpl implements UserService {
     private final UserMapper userMapper;
     private final PasswordEncoder passwordEncoder;
     private final JwtUtil jwtUtil;
 
+    /** 编码后入库；用户名冲突交给唯一键最终裁决，不保存原始密码。 */
     @Override
     public UserVo register(RegisterUserRequest request) {
         String rawPassword = request.getPassword();
@@ -53,9 +59,11 @@ public class UserServiceImpl implements UserService {
         userVo.setUsername(request.getUsername());
         userVo.setRole(UserRole.USER);
         userVo.setEnabled(true);
+        log.info("event=user_registered userId={} role=USER", registerUser.getId());
         return userVo;
     }
 
+    /** 未找到账号和密码不匹配均返回相同提示，避免向调用方暴露账号是否存在。 */
     @Override
     public LoginVo login(LoginUserRequest request) {
         String rawPassword = request.getPassword();
@@ -73,9 +81,12 @@ public class UserServiceImpl implements UserService {
         LoginVo loginVo = new LoginVo();
         loginVo.setToken(token);
         loginVo.setUser(userDoToVo(user));
+        // Token只返回客户端，日志只保留用户主键和服务端角色。
+        log.info("event=login_succeeded userId={} role={}", user.getId(), user.getRole());
         return loginVo;
     }
 
+    /** 显式选取公开字段，防止密码随实体直接序列化给客户端。 */
     private UserVo userDoToVo(UserDo userDo) {
         UserVo userVo = new UserVo();
         userVo.setId(userDo.getId());
