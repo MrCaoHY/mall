@@ -11,4 +11,6 @@ public interface OrderService {
 
     /** 取消当前买家的订单，重复取消不重复恢复库存。 */
     OrderVo cancel(Long buyerId, Long orderId);
+
+    OrderVo pay(Long buyerId, Long orderId);
 }

@@ -48,3 +48,6 @@ dependency-reduced-pom.xml
 logs/
 *.log
 *.log.*
+
+# Machine-specific learning workspace
+/.mall-learning.local.json

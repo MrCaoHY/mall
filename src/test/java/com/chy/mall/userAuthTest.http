@@ -340,8 +340,13 @@ Authorization: Bearer {{mallAuthUserToken}}
 Content-Type: application/json
 
 {
-  "requestId": "c60cdfc6-ddb3-4674-bbce-523a9a20dfa8",
+  "requestId": "c60cdfc6-ddb3-4674-bbce-523a9a20dfa9",
   "items": [
-    {"productId": 8, "quantity": 1}
+    {"productId": 72, "quantity": 2}
   ]
 }
+
+### 取消刚创建的订单
+POST {{baseUrl}}/orders/33/cancel
+Authorization: Bearer {{mallAuthUserToken}}
+Accept: application/json

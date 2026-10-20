@@ -143,6 +143,36 @@ public class OrderServiceImpl implements OrderService {
         return buildExistingOrderVo(order, orderItems);
     }
 
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public OrderVo pay(Long buyerId, Long orderId) {
+        if (buyerId == null || buyerId <= 0) {
+            throw new BusinessException(ErrorCode.REQUEST_INVALID, "用户ID必须大于0");
+        }
+        if (orderId == null || orderId <= 0) {
+            throw new BusinessException(ErrorCode.REQUEST_INVALID, "订单ID必须大于0");
+        }
+        LocalDateTime payTime = LocalDateTime.now().withNano(0);
+        int affectedRows = markOrderPaid(buyerId, orderId, payTime);
+        if (affectedRows != 1 && affectedRows != 0) {
+            throw new IllegalStateException("订单支付异常");
+        }
+        OrderDo orderDo = orderMapper.selectOne(Wrappers.<OrderDo>lambdaQuery().eq(OrderDo::getId, orderId).eq(OrderDo::getBuyerId, buyerId));
+        if (orderDo == null) {
+            throw new BusinessException(ErrorCode.ORDER_NOT_FOUND);
+        }
+        if (affectedRows == 0) {
+            if (orderDo.getStatus() == OrderStatus.PAID) {
+                return buildExistingOrderVo(orderDo);
+            }else{
+                throw new BusinessException(ErrorCode.ORDER_CONFLICT,"当前订单状态无法支付");
+            }
+        }
+        // 仅本次成功转换状态时注册回调，记录事务实际提交或回滚结果。
+        LogSupport.transactionOutcome(log, "order_pay", orderId);
+        return buildExistingOrderVo(orderDo);
+    }
+
     /**
      * 尝试将当前用户的待支付订单更新为已取消。
      * 参数由公开取消入口统一校验；本方法只负责状态转换，不恢复库存。
@@ -254,5 +284,24 @@ public class OrderServiceImpl implements OrderService {
         result.setCreatedAt(order.getCreatedAt());
         result.setItems(orderItemVos);
         return result;
+    }
+
+    /**
+     * 尝试将当前用户的待支付订单更新为已支付
+     * @param buyerId
+     * @param orderId
+     * @param payTime
+     * @return
+     */
+    private int markOrderPaid(Long buyerId, Long orderId, LocalDateTime payTime){
+        return orderMapper.update(null, Wrappers.<OrderDo>lambdaUpdate()
+                .eq(OrderDo::getId,orderId)
+                .eq(OrderDo::getBuyerId,buyerId)
+                .eq(OrderDo::getStatus,OrderStatus.PENDING_PAYMENT)
+                .gt(OrderDo::getExpiresAt, payTime)
+                .set(OrderDo::getStatus,OrderStatus.PAID)
+                .set(OrderDo::getPaidAt,payTime)
+                .set(OrderDo::getUpdatedAt,payTime)
+        );
     }
 }

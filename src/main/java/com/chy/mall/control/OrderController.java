@@ -60,4 +60,20 @@ public class OrderController {
         }
         return ResponseEntity.ok(ApiResponse.success(orderService.cancel(buyerId, orderId)));
     }
+
+    /**
+     * POST /orders/{orderId}/pay，无请求体；买家ID仅取当前认证身份。
+     * 首次支付和重复支付均返回200，状态转换及首次支付时间由Service维护。
+     */
+    @PostMapping("/{orderId}/pay")
+    public ResponseEntity<ApiResponse<OrderVo>> pay(@PathVariable @Positive(message = "订单ID必须大于0") Long orderId, @AuthenticationPrincipal AuthenticatedUser currentUser) {
+        if (currentUser == null) {
+            throw new BusinessException(ErrorCode.UNAUTHORIZED);
+        }
+        Long buyerId = currentUser.userId();
+        if (buyerId == null || buyerId <= 0) {
+            throw new BusinessException(ErrorCode.BUYER_IDENTITY_INVALID);
+        }
+        return ResponseEntity.ok(ApiResponse.success(orderService.pay(buyerId, orderId)));
+    }
 }
