@@ -12,7 +12,9 @@ public enum OrderOperationAction {
     /** 待支付订单成功支付；幂等重试不是新动作。 */
     PAY(OrderStatus.PENDING_PAYMENT, OrderStatus.PAID),
     /** 待支付订单成功取消，并在同一事务恢复库存。 */
-    CANCEL(OrderStatus.PENDING_PAYMENT, OrderStatus.CANCELLED);
+    CANCEL(OrderStatus.PENDING_PAYMENT, OrderStatus.CANCELLED),
+    /** 待支付订单超时关闭 */
+    CLOSE(OrderStatus.PENDING_PAYMENT,OrderStatus.CLOSED);
 
     /** 动作前状态，只有CREATE允许为空。 */
     private final OrderStatus fromStatus;

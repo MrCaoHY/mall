@@ -24,12 +24,17 @@ public class OrderOperationLogService {
      * 插入失败直接向外抛出，让订单状态、库存和流水一起回滚，不吞掉唯一键异常。
      */
     @Transactional(propagation = Propagation.MANDATORY, rollbackFor = Exception.class)
-    public void recordOperation(Long orderId, Long operatorId, OrderOperationAction action,
-                                LocalDateTime operationTime) {
-        if (orderId == null || orderId <= 0 || operatorId == null || operatorId <= 0
+    public void recordOperation(Long orderId, Long operatorId, OrderOperationAction action, LocalDateTime operationTime) {
+        if (orderId == null || orderId <= 0 || operatorId == null
                 || action == null || operationTime == null) {
             throw new IllegalArgumentException("订单流水内部参数不合法");
         }
+        // 自动关闭使用系统编号0；创建、支付和取消必须由正数用户ID执行。
+        boolean validOperator = action == OrderOperationAction.CLOSE ? operatorId == 0L : operatorId > 0;
+        if (!validOperator) {
+            throw new IllegalArgumentException("订单流水操作者与动作不匹配");
+        }
+
         OrderOperationLogDo operation = new OrderOperationLogDo();
         operation.setOrderId(orderId);
         operation.setOperatorId(operatorId);

@@ -8,6 +8,7 @@ import com.chy.mall.entity.OrderDo;
 import com.chy.mall.entity.OrderItemDo;
 import com.chy.mall.entity.ProductDo;
 import com.chy.mall.entity.ProductInventoryDo;
+import com.chy.mall.enums.OrderOperationAction;
 import com.chy.mall.enums.OrderStatus;
 import com.chy.mall.enums.ProductStatus;
 import com.chy.mall.exception.BusinessException;
@@ -19,6 +20,7 @@ import com.chy.mall.entity.OrderOperationLogDo;
 import com.chy.mall.mapper.ProductInventoryMapper;
 import com.chy.mall.mapper.ProductMapper;
 import com.chy.mall.service.OrderService;
+import com.chy.mall.service.impl.OrderCloseTransactionService;
 import com.chy.mall.vo.OrderVo;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
@@ -38,11 +40,13 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
 import java.security.SecureRandom;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -97,6 +101,8 @@ class OrderCancelIntegrationTest {
 
     @Autowired
     private OrderService orderService;
+    @Autowired
+    private OrderCloseTransactionService closeTransactionService;
     @Autowired
     private ProductMapper productMapper;
 
@@ -364,6 +370,444 @@ class OrderCancelIntegrationTest {
         }
     }
 
+    /** 两个真实业务事务在订单UPDATE前汇合，验证支付和取消只能赢得同一次状态转换。 */
+    @Test
+    @SuppressWarnings("unchecked")
+    void concurrentPayAndCancelOnlyOneSucceeds() throws Exception {
+        assertServiceBoundary();
+        Fixture fixture = createFixture(1);
+        ExecutorService executor = null;
+        List<Future<OrderVo>> futures = new ArrayList<>();
+        Long testedOrderId = null;
+        boolean passed = false;
+        try {
+            OrderVo created = createPendingOrder(fixture);
+            testedOrderId = created.getId();
+            OrderDo original = savedOrder(created.getId());
+            List<OrderItemDo> originalItems = orderItemMapper.selectList(Wrappers.<OrderItemDo>lambdaQuery()
+                    .eq(OrderItemDo::getOrderId, created.getId()).orderByAsc(OrderItemDo::getId));
+            assertEquals(1, originalItems.size());
+            OrderMapper orderSpy = mapperObserver(orderMapper);
+            ProductInventoryMapper inventorySpy = mapperObserver(inventoryMapper);
+            clearInvocations(orderSpy, inventorySpy);
+
+            Answer<?> realOrderCalls = mockingDetails(orderSpy).getMockCreationSettings().getDefaultAnswer();
+            CyclicBarrier updateBarrier = new CyclicBarrier(2);
+            AtomicInteger changed = new AtomicInteger();
+            AtomicInteger unchanged = new AtomicInteger();
+            doAnswer(invocation -> {
+                assertTrue(TransactionSynchronizationManager.isActualTransactionActive());
+                // 在实际SQL之前同步，保留Mapper真实委托，不预设1/0或使用sleep猜测时序。
+                updateBarrier.await(10, TimeUnit.SECONDS);
+                int rows = (Integer) realOrderCalls.answer(invocation);
+                assertTrue(rows == 0 || rows == 1);
+                if (rows == 1) {
+                    changed.incrementAndGet();
+                } else {
+                    unchanged.incrementAndGet();
+                }
+                return rows;
+            }).when(orderSpy).update(isNull(), any(Wrapper.class));
+
+            executor = Executors.newFixedThreadPool(2);
+            futures.add(executor.submit(() -> orderService.pay(BUYER_ID, created.getId())));
+            futures.add(executor.submit(() -> orderService.cancel(BUYER_ID, created.getId())));
+            OrderVo winner = null;
+            OrderOperationAction winningAction = null;
+            int conflicts = 0;
+            for (int index = 0; index < futures.size(); index++) {
+                try {
+                    OrderVo result = futures.get(index).get(20, TimeUnit.SECONDS);
+                    assertNull(winner, "支付和取消不能同时成功");
+                    winner = result;
+                    winningAction = index == 0 ? OrderOperationAction.PAY : OrderOperationAction.CANCEL;
+                } catch (ExecutionException exception) {
+                    // 只接受明确的业务冲突，连接错误、超时和断言失败不能算预期的竞争落败。
+                    BusinessException conflict = assertInstanceOf(BusinessException.class, exception.getCause());
+                    assertEquals(ErrorCode.ORDER_CONFLICT, conflict.getErrorCode());
+                    conflicts++;
+                }
+            }
+            assertNotNull(winner);
+            assertNotNull(winningAction);
+            assertEquals(1, conflicts);
+            assertEquals(1, changed.get());
+            assertEquals(1, unchanged.get());
+            verify(orderSpy, times(2)).update(isNull(), any(Wrapper.class));
+
+            OrderDo saved = savedOrder(created.getId());
+            assertEquals(winningAction.getToStatus(), saved.getStatus());
+            assertEquals(saved.getStatus(), winner.getStatus());
+            assertEquals(created.getId(), winner.getId());
+            assertEquals(created.getOrderNo(), winner.getOrderNo());
+            assertEquals(created.getTotalAmount(), winner.getTotalAmount());
+            assertEquals(created.getCreatedAt(), winner.getCreatedAt());
+            assertEquals(created.getExpiresAt(), winner.getExpiresAt());
+            assertEquals(created.getItems(), winner.getItems());
+            assertEquals(original.getOrderNo(), saved.getOrderNo());
+            assertEquals(original.getBuyerId(), saved.getBuyerId());
+            assertEquals(original.getRequestId(), saved.getRequestId());
+            assertEquals(original.getRequestFingerprint(), saved.getRequestFingerprint());
+            assertEquals(original.getTotalAmount(), saved.getTotalAmount());
+            assertEquals(original.getCreatedAt(), saved.getCreatedAt());
+            assertEquals(original.getExpiresAt(), saved.getExpiresAt());
+            int expectedStock;
+            if (winningAction == OrderOperationAction.PAY) {
+                expectedStock = INITIAL_STOCK - QUANTITY;
+                assertNotNull(saved.getPaidAt());
+                assertTrue(saved.getPaidAt().isBefore(saved.getExpiresAt()));
+                assertNull(saved.getCancelledAt());
+                assertEquals(saved.getPaidAt(), saved.getUpdatedAt());
+                verify(inventorySpy, times(0)).update(isNull(), any(Wrapper.class));
+            } else {
+                expectedStock = INITIAL_STOCK;
+                assertNotNull(saved.getCancelledAt());
+                assertNull(saved.getPaidAt());
+                assertEquals(saved.getCancelledAt(), saved.getUpdatedAt());
+                verify(inventorySpy, times(1)).update(isNull(), any(Wrapper.class));
+            }
+            assertStock(fixture.products().getFirst().getId(), expectedStock);
+            assertEquals(originalItems, orderItemMapper.selectList(Wrappers.<OrderItemDo>lambdaQuery()
+                    .eq(OrderItemDo::getOrderId, created.getId()).orderByAsc(OrderItemDo::getId)));
+            List<OrderOperationLogDo> operations = operationLogMapper.selectList(Wrappers.<OrderOperationLogDo>lambdaQuery()
+                    .eq(OrderOperationLogDo::getOrderId, created.getId())
+                    .orderByAsc(OrderOperationLogDo::getCreatedAt, OrderOperationLogDo::getId));
+            assertEquals(List.of(OrderOperationAction.CREATE, winningAction),
+                    operations.stream().map(OrderOperationLogDo::getAction).toList());
+            for (OrderOperationLogDo operation : operations) {
+                assertNotNull(operation.getId());
+                assertEquals(created.getId(), operation.getOrderId());
+                assertEquals(BUYER_ID, operation.getOperatorId());
+            }
+            assertNull(operations.getFirst().getFromStatus());
+            assertEquals(OrderStatus.PENDING_PAYMENT, operations.getFirst().getToStatus());
+            assertEquals(created.getCreatedAt(), operations.getFirst().getCreatedAt());
+            assertEquals(OrderStatus.PENDING_PAYMENT, operations.get(1).getFromStatus());
+            assertEquals(saved.getStatus(), operations.get(1).getToStatus());
+            assertEquals(saved.getUpdatedAt(), operations.get(1).getCreatedAt());
+            assertEquals(1L, orderMapper.selectCount(Wrappers.<OrderDo>lambdaQuery()
+                    .eq(OrderDo::getBuyerId, BUYER_ID).eq(OrderDo::getRequestId, fixture.requestId())));
+            System.out.printf("PAY_CANCEL winner=%s, updateRows=1/0, stock=%d, actions=CREATE/%s%n",
+                    winningAction, expectedStock, winningAction);
+            passed = true;
+        } finally {
+            // 工作线程必须真正退出，才可删除本次数据；失败或未终止时保留现场。
+            boolean stopped = stopWorkers(executor, futures);
+            finishFixture(fixture, passed && stopped);
+            assertTrue(stopped, "并发任务未及时结束，已保留本项专用数据");
+        }
+        assertNotNull(testedOrderId);
+        assertNull(orderMapper.selectById(testedOrderId));
+        assertEquals(0L, orderItemMapper.selectCount(Wrappers.<OrderItemDo>lambdaQuery()
+                .eq(OrderItemDo::getOrderId, testedOrderId)));
+        assertEquals(0L, operationLogMapper.selectCount(Wrappers.<OrderOperationLogDo>lambdaQuery()
+                .eq(OrderOperationLogDo::getOrderId, testedOrderId)));
+        for (ProductDo product : fixture.products()) {
+            assertNull(inventoryMapper.selectById(product.getId()));
+            assertNull(productMapper.selectById(product.getId()));
+        }
+        System.out.println("PAY_CANCEL fixture cleanup verified after both workers terminated");
+    }
+
+    /** 已过期订单的取消与系统关闭竞争，只能由获胜事务恢复库存并写成功流水。 */
+    @Test
+    @SuppressWarnings("unchecked")
+    void concurrentCancelAndCloseRestoresStockExactlyOnce() throws Exception {
+        assertServiceBoundary();
+        assertTrue(AopUtils.isAopProxy(closeTransactionService));
+        Fixture fixture = createFixture(1);
+        ExecutorService executor = null;
+        List<Future<?>> futures = new ArrayList<>();
+        Long testedOrderId = null;
+        boolean passed = false;
+        try {
+            OrderVo created = createPendingOrder(fixture);
+            Long orderId = created.getId();
+            testedOrderId = orderId;
+            LocalDateTime historicalCreatedAt = prepareExpiredOrder(fixture, orderId);
+            assertFalse(TransactionSynchronizationManager.isActualTransactionActive());
+            OrderDo original = savedOrder(orderId);
+            assertEquals(OrderStatus.PENDING_PAYMENT, original.getStatus());
+            assertTrue(original.getExpiresAt().isBefore(LocalDateTime.now()));
+            assertStock(fixture.products().getFirst().getId(), INITIAL_STOCK - QUANTITY);
+            List<OrderItemDo> originalItems = orderItemMapper.selectList(Wrappers.<OrderItemDo>lambdaQuery()
+                    .eq(OrderItemDo::getOrderId, orderId).orderByAsc(OrderItemDo::getId));
+            OrderMapper orderSpy = mapperObserver(orderMapper);
+            ProductInventoryMapper inventorySpy = mapperObserver(inventoryMapper);
+            // 历史时间准备中的UPDATE不计入业务竞争的两次状态更新。
+            clearInvocations(orderSpy, inventorySpy);
+            Answer<?> realOrderCalls = mockingDetails(orderSpy).getMockCreationSettings().getDefaultAnswer();
+            CyclicBarrier updateBarrier = new CyclicBarrier(2);
+            AtomicInteger changed = new AtomicInteger();
+            AtomicInteger unchanged = new AtomicInteger();
+            doAnswer(invocation -> {
+                assertTrue(TransactionSynchronizationManager.isActualTransactionActive());
+                updateBarrier.await(10, TimeUnit.SECONDS);
+                int rows = (Integer) realOrderCalls.answer(invocation);
+                assertTrue(rows == 0 || rows == 1);
+                if (rows == 1) {
+                    changed.incrementAndGet();
+                } else {
+                    unchanged.incrementAndGet();
+                }
+                return rows;
+            }).when(orderSpy).update(isNull(), any(Wrapper.class));
+
+            executor = Executors.newFixedThreadPool(2);
+            Future<OrderVo> cancelFuture = executor.submit(() -> orderService.cancel(BUYER_ID, orderId));
+            futures.add(cancelFuture);
+            Future<Boolean> closeFuture = executor.submit(() -> closeTransactionService.closeExpiredOrder(orderId));
+            futures.add(closeFuture);
+            OrderVo cancelled = null;
+            BusinessException cancelConflict = null;
+            try {
+                cancelled = cancelFuture.get(20, TimeUnit.SECONDS);
+            } catch (ExecutionException exception) {
+                cancelConflict = assertInstanceOf(BusinessException.class, exception.getCause());
+                assertEquals(ErrorCode.ORDER_CONFLICT, cancelConflict.getErrorCode());
+            }
+            boolean closed = closeFuture.get(20, TimeUnit.SECONDS);
+            assertEquals(1, changed.get());
+            assertEquals(1, unchanged.get());
+            verify(orderSpy, times(2)).update(isNull(), any(Wrapper.class));
+            verify(inventorySpy, times(1)).update(isNull(), any(Wrapper.class));
+            assertFalse(TransactionSynchronizationManager.isActualTransactionActive());
+            OrderDo saved = savedOrder(orderId);
+            OrderOperationAction winningAction;
+            Long winningOperator;
+            if (closed) {
+                assertNull(cancelled, "关闭成功后取消不能成功返回");
+                assertNotNull(cancelConflict);
+                assertEquals(OrderStatus.CLOSED, saved.getStatus());
+                assertNull(saved.getCancelledAt());
+                winningAction = OrderOperationAction.CLOSE;
+                winningOperator = 0L;
+            } else {
+                assertNotNull(cancelled, "关闭跳过时必须由取消成功完成转换");
+                assertNull(cancelConflict);
+                assertEquals(OrderStatus.CANCELLED, saved.getStatus());
+                assertNotNull(saved.getCancelledAt());
+                assertEquals(saved.getCancelledAt(), saved.getUpdatedAt());
+                assertEquals(orderId, cancelled.getId());
+                assertEquals(saved.getStatus(), cancelled.getStatus());
+                assertEquals(original.getOrderNo(), cancelled.getOrderNo());
+                assertEquals(original.getTotalAmount(), cancelled.getTotalAmount());
+                assertEquals(original.getCreatedAt(), cancelled.getCreatedAt());
+                assertEquals(original.getExpiresAt(), cancelled.getExpiresAt());
+                assertEquals(created.getItems(), cancelled.getItems());
+                winningAction = OrderOperationAction.CANCEL;
+                winningOperator = BUYER_ID;
+            }
+            assertNull(saved.getPaidAt());
+            assertNotNull(saved.getUpdatedAt());
+            assertFalse(saved.getUpdatedAt().isBefore(original.getExpiresAt()));
+            assertEquals(original.getOrderNo(), saved.getOrderNo());
+            assertEquals(original.getBuyerId(), saved.getBuyerId());
+            assertEquals(original.getRequestId(), saved.getRequestId());
+            assertEquals(original.getRequestFingerprint(), saved.getRequestFingerprint());
+            assertEquals(original.getTotalAmount(), saved.getTotalAmount());
+            assertEquals(original.getCreatedAt(), saved.getCreatedAt());
+            assertEquals(original.getExpiresAt(), saved.getExpiresAt());
+            assertStock(fixture.products().getFirst().getId(), INITIAL_STOCK);
+            assertEquals(originalItems, orderItemMapper.selectList(Wrappers.<OrderItemDo>lambdaQuery()
+                    .eq(OrderItemDo::getOrderId, orderId).orderByAsc(OrderItemDo::getId)));
+            List<OrderOperationLogDo> operations = operationLogMapper.selectList(Wrappers.<OrderOperationLogDo>lambdaQuery()
+                    .eq(OrderOperationLogDo::getOrderId, orderId)
+                    .orderByAsc(OrderOperationLogDo::getCreatedAt, OrderOperationLogDo::getId));
+            assertEquals(List.of(OrderOperationAction.CREATE, winningAction),
+                    operations.stream().map(OrderOperationLogDo::getAction).toList());
+            assertEquals(BUYER_ID, operations.getFirst().getOperatorId());
+            assertEquals(historicalCreatedAt, operations.getFirst().getCreatedAt());
+            assertNull(operations.getFirst().getFromStatus());
+            assertEquals(OrderStatus.PENDING_PAYMENT, operations.getFirst().getToStatus());
+            assertEquals(orderId, operations.get(1).getOrderId());
+            assertNotNull(operations.get(1).getId());
+            assertEquals(winningOperator, operations.get(1).getOperatorId());
+            assertEquals(OrderStatus.PENDING_PAYMENT, operations.get(1).getFromStatus());
+            assertEquals(saved.getStatus(), operations.get(1).getToStatus());
+            assertEquals(saved.getUpdatedAt(), operations.get(1).getCreatedAt());
+            System.out.printf("CANCEL_CLOSE winner=%s, closeResult=%s, updateRows=1/0, stock=5, restores=1%n",
+                    winningAction, closed);
+            passed = true;
+        } finally {
+            boolean stopped = stopWorkers(executor, futures);
+            finishFixture(fixture, passed && stopped);
+            assertTrue(stopped, "并发任务未及时结束，已保留本项专用数据");
+        }
+        assertNotNull(testedOrderId);
+        assertNull(orderMapper.selectById(testedOrderId));
+        assertEquals(0L, orderItemMapper.selectCount(Wrappers.<OrderItemDo>lambdaQuery()
+                .eq(OrderItemDo::getOrderId, testedOrderId)));
+        assertEquals(0L, operationLogMapper.selectCount(Wrappers.<OrderOperationLogDo>lambdaQuery()
+                .eq(OrderOperationLogDo::getOrderId, testedOrderId)));
+        for (ProductDo product : fixture.products()) {
+            assertNull(inventoryMapper.selectById(product.getId()));
+            assertNull(productMapper.selectById(product.getId()));
+        }
+        System.out.println("CANCEL_CLOSE fixture cleanup verified after both workers terminated");
+    }
+
+    /** 两件商品中第二份库存缺失，关闭必须撤销先前已成功恢复的库存与状态。 */
+    @Test
+    @SuppressWarnings("unchecked")
+    void missingSecondInventoryDuringCloseRollsBackStateAndFirstRestore() {
+        assertServiceBoundary();
+        assertTrue(AopUtils.isAopProxy(closeTransactionService));
+        Fixture fixture = createFixture(2);
+        boolean passed = false;
+        try {
+            Long orderId = createPendingOrder(fixture).getId();
+            prepareExpiredOrder(fixture, orderId);
+            OrderDo before = savedOrder(orderId);
+            Long firstId = fixture.products().getFirst().getId();
+            Long secondId = fixture.products().get(1).getId();
+            assertTrue(firstId < secondId);
+            List<OrderItemDo> originalItems = orderItemMapper.selectList(Wrappers.<OrderItemDo>lambdaQuery()
+                    .eq(OrderItemDo::getOrderId, orderId).orderByAsc(OrderItemDo::getId));
+            List<OrderOperationLogDo> originalOperations = operationLogMapper.selectList(Wrappers.<OrderOperationLogDo>lambdaQuery()
+                    .eq(OrderOperationLogDo::getOrderId, orderId).orderByAsc(OrderOperationLogDo::getId));
+            assertEquals(1, originalOperations.size());
+            new TransactionTemplate(transactionManager).executeWithoutResult(status ->
+                    assertEquals(1, inventoryMapper.deleteById(secondId)));
+            ProductInventoryMapper observer = mapperObserver(inventoryMapper);
+            clearInvocations(observer);
+            Answer<?> realCalls = mockingDetails(observer).getMockCreationSettings().getDefaultAnswer();
+            AtomicInteger attempts = new AtomicInteger();
+            doAnswer(invocation -> {
+                int attempt = attempts.incrementAndGet();
+                assertTrue(TransactionSynchronizationManager.isActualTransactionActive());
+                assertEquals(OrderStatus.CLOSED, savedOrder(orderId).getStatus());
+                int rows = (Integer) realCalls.answer(invocation);
+                assertEquals(attempt == 1 ? 1 : 0, rows);
+                assertTrue(attempt <= 2);
+                assertStock(firstId, INITIAL_STOCK);
+                return rows;
+            }).when(observer).update(isNull(), any(Wrapper.class));
+            BusinessException failure = assertThrows(BusinessException.class,
+                    () -> closeTransactionService.closeExpiredOrder(orderId));
+            assertEquals(ErrorCode.PRODUCT_INVENTORY_MISSING, failure.getErrorCode());
+            assertEquals(2, attempts.get());
+            assertFalse(TransactionSynchronizationManager.isActualTransactionActive());
+            assertEquals(before, savedOrder(orderId));
+            assertStock(firstId, INITIAL_STOCK - QUANTITY);
+            assertNull(inventoryMapper.selectById(secondId), "业务回滚不能恢复准备阶段已删除的记录");
+            assertEquals(originalItems, orderItemMapper.selectList(Wrappers.<OrderItemDo>lambdaQuery()
+                    .eq(OrderItemDo::getOrderId, orderId).orderByAsc(OrderItemDo::getId)));
+            assertEquals(originalOperations, operationLogMapper.selectList(Wrappers.<OrderOperationLogDo>lambdaQuery()
+                    .eq(OrderOperationLogDo::getOrderId, orderId).orderByAsc(OrderOperationLogDo::getId)));
+            passed = true;
+        } finally {
+            finishFixture(fixture, passed);
+        }
+    }
+
+    /** 重复的系统关闭同时触发，也只能关闭一次、恢复库存一次并生成一条CLOSE。 */
+    @Test
+    @SuppressWarnings("unchecked")
+    void concurrentCloseRestoresStockExactlyOnce() throws Exception {
+        assertServiceBoundary();
+        assertTrue(AopUtils.isAopProxy(closeTransactionService));
+        Fixture fixture = createFixture(1);
+        ExecutorService executor = null;
+        List<Future<Boolean>> futures = new ArrayList<>();
+        Long testedOrderId = null;
+        boolean passed = false;
+        try {
+            Long orderId = createPendingOrder(fixture).getId();
+            testedOrderId = orderId;
+            LocalDateTime historicalCreatedAt = prepareExpiredOrder(fixture, orderId);
+            OrderDo original = savedOrder(orderId);
+            List<OrderItemDo> originalItems = orderItemMapper.selectList(Wrappers.<OrderItemDo>lambdaQuery()
+                    .eq(OrderItemDo::getOrderId, orderId).orderByAsc(OrderItemDo::getId));
+            OrderMapper orderSpy = mapperObserver(orderMapper);
+            ProductInventoryMapper inventorySpy = mapperObserver(inventoryMapper);
+            clearInvocations(orderSpy, inventorySpy);
+            Answer<?> realCalls = mockingDetails(orderSpy).getMockCreationSettings().getDefaultAnswer();
+            CyclicBarrier barrier = new CyclicBarrier(2);
+            AtomicInteger changed = new AtomicInteger();
+            AtomicInteger unchanged = new AtomicInteger();
+            doAnswer(invocation -> {
+                assertTrue(TransactionSynchronizationManager.isActualTransactionActive());
+                barrier.await(10, TimeUnit.SECONDS);
+                int rows = (Integer) realCalls.answer(invocation);
+                assertTrue(rows == 0 || rows == 1);
+                if (rows == 1) { changed.incrementAndGet(); } else { unchanged.incrementAndGet(); }
+                return rows;
+            }).when(orderSpy).update(isNull(), any(Wrapper.class));
+            executor = Executors.newFixedThreadPool(2);
+            for (int index = 0; index < 2; index++) {
+                futures.add(executor.submit(() -> closeTransactionService.closeExpiredOrder(orderId)));
+            }
+            int closed = 0;
+            for (Future<Boolean> future : futures) {
+                if (future.get(20, TimeUnit.SECONDS)) { closed++; }
+            }
+            assertEquals(1, closed);
+            assertEquals(1, changed.get());
+            assertEquals(1, unchanged.get());
+            verify(orderSpy, times(2)).update(isNull(), any(Wrapper.class));
+            verify(inventorySpy, times(1)).update(isNull(), any(Wrapper.class));
+            OrderDo saved = savedOrder(orderId);
+            assertEquals(OrderStatus.CLOSED, saved.getStatus());
+            assertNull(saved.getPaidAt());
+            assertNull(saved.getCancelledAt());
+            assertEquals(original.getOrderNo(), saved.getOrderNo());
+            assertEquals(original.getBuyerId(), saved.getBuyerId());
+            assertEquals(original.getTotalAmount(), saved.getTotalAmount());
+            assertEquals(original.getCreatedAt(), saved.getCreatedAt());
+            assertEquals(original.getExpiresAt(), saved.getExpiresAt());
+            assertStock(fixture.products().getFirst().getId(), INITIAL_STOCK);
+            assertEquals(originalItems, orderItemMapper.selectList(Wrappers.<OrderItemDo>lambdaQuery()
+                    .eq(OrderItemDo::getOrderId, orderId).orderByAsc(OrderItemDo::getId)));
+            List<OrderOperationLogDo> operations = operationLogMapper.selectList(Wrappers.<OrderOperationLogDo>lambdaQuery()
+                    .eq(OrderOperationLogDo::getOrderId, orderId)
+                    .orderByAsc(OrderOperationLogDo::getCreatedAt, OrderOperationLogDo::getId));
+            assertEquals(List.of(OrderOperationAction.CREATE, OrderOperationAction.CLOSE),
+                    operations.stream().map(OrderOperationLogDo::getAction).toList());
+            assertEquals(historicalCreatedAt, operations.getFirst().getCreatedAt());
+            assertEquals(0L, operations.get(1).getOperatorId());
+            assertEquals(OrderStatus.PENDING_PAYMENT, operations.get(1).getFromStatus());
+            assertEquals(OrderStatus.CLOSED, operations.get(1).getToStatus());
+            assertEquals(saved.getUpdatedAt(), operations.get(1).getCreatedAt());
+            passed = true;
+        } finally {
+            boolean stopped = stopWorkers(executor, futures);
+            finishFixture(fixture, passed && stopped);
+            assertTrue(stopped, "关闭线程未结束，保留专用数据");
+        }
+        assertNotNull(testedOrderId);
+        assertNull(orderMapper.selectById(testedOrderId));
+        assertEquals(0L, operationLogMapper.selectCount(Wrappers.<OrderOperationLogDo>lambdaQuery()
+                .eq(OrderOperationLogDo::getOrderId, testedOrderId)));
+        assertEquals(0L, orderItemMapper.selectCount(Wrappers.<OrderItemDo>lambdaQuery()
+                .eq(OrderItemDo::getOrderId, testedOrderId)));
+        for (ProductDo product : fixture.products()) {
+            assertNull(inventoryMapper.selectById(product.getId()));
+            assertNull(productMapper.selectById(product.getId()));
+        }
+    }
+
+    /** 仅把本次专用订单准备为历史过期状态，不改变生产时间配置。 */
+    private LocalDateTime prepareExpiredOrder(Fixture fixture, Long orderId) {
+        LocalDateTime createdAt = LocalDateTime.now().withNano(0).minusMinutes(31);
+        new TransactionTemplate(transactionManager).executeWithoutResult(status -> {
+            assertEquals(1, orderMapper.update(null, Wrappers.<OrderDo>lambdaUpdate()
+                    .eq(OrderDo::getId, orderId).eq(OrderDo::getBuyerId, BUYER_ID)
+                    .eq(OrderDo::getStatus, OrderStatus.PENDING_PAYMENT)
+                    .set(OrderDo::getCreatedAt, createdAt).set(OrderDo::getUpdatedAt, createdAt)
+                    .set(OrderDo::getExpiresAt, createdAt.plusMinutes(30))));
+            assertEquals(fixture.products().size(), orderItemMapper.update(null, Wrappers.<OrderItemDo>lambdaUpdate()
+                    .eq(OrderItemDo::getOrderId, orderId)
+                    .set(OrderItemDo::getCreatedAt, createdAt).set(OrderItemDo::getUpdatedAt, createdAt)));
+            assertEquals(1, operationLogMapper.update(null, Wrappers.<OrderOperationLogDo>lambdaUpdate()
+                    .eq(OrderOperationLogDo::getOrderId, orderId)
+                    .eq(OrderOperationLogDo::getAction, OrderOperationAction.CREATE)
+                    .set(OrderOperationLogDo::getCreatedAt, createdAt)));
+        });
+        assertFalse(TransactionSynchronizationManager.isActualTransactionActive());
+        return createdAt;
+    }
+
     private void assertServiceBoundary() {
         assertTrue(AopUtils.isAopProxy(orderService), "必须通过Spring事务代理调用Service");
         assertFalse(TransactionSynchronizationManager.isActualTransactionActive(), "测试本身不能开启事务");
@@ -452,11 +896,12 @@ class OrderCancelIntegrationTest {
         assertEquals(expected, inventory.getStock().intValue(), "商品" + productId + "库存不符合预期");
     }
 
-    private static boolean stopWorkers(ExecutorService executor, List<Future<OrderVo>> futures) {
+    // 终止逻辑不依赖返回值，兼容订单结果和关闭方法的布尔结果。
+    private static boolean stopWorkers(ExecutorService executor, List<? extends Future<?>> futures) {
         if (executor == null) {
             return true;
         }
-        for (Future<OrderVo> future : futures) {
+        for (Future<?> future : futures) {
             if (!future.isDone()) {
                 future.cancel(true);
             }

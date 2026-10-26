@@ -98,8 +98,8 @@ CREATE TABLE users
 CREATE TABLE order_operation_logs (
     id BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT '订单操作流水主键',
     order_id BIGINT NOT NULL COMMENT '所属订单主键，关联orders.id',
-    operator_id BIGINT NOT NULL COMMENT '可信认证用户ID，创建、支付或取消的操作者',
-    action VARCHAR(20) NOT NULL COMMENT '真实成功动作：CREATE、PAY、CANCEL',
+    operator_id BIGINT NOT NULL COMMENT '操作者编号：用户动作为可信用户ID，系统关闭为0',
+    action VARCHAR(20) NOT NULL COMMENT '真实成功动作：CREATE、PAY、CANCEL、CLOSE',
     from_status VARCHAR(20) NULL COMMENT '动作前订单状态，CREATE时为空',
     to_status VARCHAR(20) NOT NULL COMMENT '动作后订单状态',
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '服务端业务动作时间',

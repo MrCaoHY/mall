@@ -13,9 +13,9 @@ public class OrderOperationLogVo {
     private Long id;
     /** 所属订单主键。 */
     private Long orderId;
-    /** 执行动作的用户ID。 */
+    /** 操作者编号：用户动作为用户ID，系统关闭为0。 */
     private Long operatorId;
-    /** 创建、支付或取消。 */
+    /** 创建、支付、取消或系统超时关闭。 */
     private OrderOperationAction action;
     /** 动作前状态，创建记录为空。 */
     private OrderStatus fromStatus;

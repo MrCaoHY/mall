@@ -39,6 +39,43 @@ class OrderOperationLogServiceTest {
         verifyNoMoreInteractions(mapper);
     }
 
+    /** 系统关闭流水记录真实的待支付到关闭转换，不冒用买家身份。 */
+    @Test
+    void closeRecordUsesSystemOperatorAndClosedTransition() {
+        LocalDateTime time = LocalDateTime.of(2026, 10, 26, 18, 0);
+        when(mapper.insert(any(OrderOperationLogDo.class))).thenReturn(1);
+
+        service.recordOperation(9002L, 0L, OrderOperationAction.CLOSE, time);
+
+        verify(mapper).insert(operationCaptor.capture());
+        OrderOperationLogDo saved = operationCaptor.getValue();
+        assertEquals(0L, saved.getOperatorId());
+        assertEquals(OrderOperationAction.CLOSE, saved.getAction());
+        assertEquals(OrderStatus.PENDING_PAYMENT, saved.getFromStatus());
+        assertEquals(OrderStatus.CLOSED, saved.getToStatus());
+        assertEquals(time, saved.getCreatedAt());
+        verifyNoMoreInteractions(mapper);
+    }
+
+    /** 错误身份必须在访问Mapper之前拒绝，系统编号不能用于用户动作。 */
+    @Test
+    void invalidOperatorsAreRejectedBeforeWriting() {
+        LocalDateTime time = LocalDateTime.of(2026, 10, 26, 18, 0);
+        for (OrderOperationAction action : OrderOperationAction.values()) {
+            Long invalidOperator = action == OrderOperationAction.CLOSE ? 77L : 0L;
+            assertThrows(IllegalArgumentException.class,
+                    () -> service.recordOperation(9002L, invalidOperator, action, time),
+                    action.name() + "必须拒绝不匹配的操作者");
+        }
+        assertThrows(IllegalArgumentException.class,
+                () -> service.recordOperation(9002L, -1L, OrderOperationAction.CLOSE, time));
+        assertThrows(IllegalArgumentException.class,
+                () -> service.recordOperation(9002L, -1L, OrderOperationAction.PAY, time));
+        assertThrows(IllegalArgumentException.class,
+                () -> service.recordOperation(9002L, null, OrderOperationAction.CLOSE, time));
+        verifyNoInteractions(mapper);
+    }
+
     @Test
     void zeroInsertRowsMustFailInsteadOfSilentlyCommittingBusiness() {
         when(mapper.insert(any(OrderOperationLogDo.class))).thenReturn(0);

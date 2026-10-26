@@ -18,14 +18,14 @@ public class OrderOperationLogDo {
     private Long id;
     /** 订单数据库主键，不是orderNo或客户端requestId。 */
     private Long orderId;
-    /** 可信调用方传入的当前操作用户ID，不能接受客户端任意指定。 */
+    /** 用户动作使用可信用户ID，系统关闭使用0；不能接受客户端任意指定。 */
     private Long operatorId;
-    /** 成功动作名称：CREATE、PAY或CANCEL。 */
+    /** 成功动作名称：CREATE、PAY、CANCEL或CLOSE。 */
     private OrderOperationAction action;
     /** 动作前状态，创建订单时为null。 */
     private OrderStatus fromStatus;
     /** 动作成功后的状态。 */
     private OrderStatus toStatus;
-    /** 服务端业务动作时间，与订单创建、支付或取消时间使用同一值。 */
+    /** 服务端业务动作时间，与对应创建、支付、取消或关闭时间使用同一值。 */
     private LocalDateTime createdAt;
 }
