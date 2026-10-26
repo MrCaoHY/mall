@@ -1,0 +1,246 @@
+# 订单操作记录验收：启动最新mall，在IDEA选择local私有环境，按00～08逐项执行。
+# 00从http-client.private.env.json读取已有用户凭据并保存Token，不必运行其他HTTP文件。
+# 私有环境键沿用mallExistingUsername/mallExistingPassword；00登录、01开启新一轮，02重试复用requestId。
+# 02会真实创建订单并扣库存1件，04会真实支付；不会自动清理或回滚。
+# 商品72仅为默认值，请先确认它仍上架且有库存；可以换成其他测试商品。
+# 04之后不要取消该订单。请在订单创建后的30分钟内完成支付。
+# OrderVo没有paidAt，因此本文件不能自动证明支付时间不变，需按04/06输出的只读SQL对比。
+@baseUrl = http://localhost:8081
+@payProductId = 72
+@payUsername = {{mallExistingUsername}}
+@payPassword = {{mallExistingPassword}}
+
+### 00 用户登录：选择local私有环境，自动保存后续支付使用的Token
+< {%
+    // 登录前清空旧身份和支付结果，避免登录失败后继续使用上一账号的数据。
+    client.global.set("mallAuthUserToken", "");
+    client.global.set("mallAuthUserId", "");
+    client.global.set("mallPayProductId", "");
+    client.global.set("mallPayStockBefore", "");
+    client.global.set("mallPayRequestId", "");
+    client.global.set("mallPayOrderId", "");
+    client.global.set("mallPayCreatedSnapshot", "");
+    client.global.set("mallPayFirstSnapshot", "");
+    client.global.set("mallPayRepeatVerified", "");
+%}
+# @no-cookie-jar
+POST {{baseUrl}}/users/login
+Content-Type: application/json
+Accept: application/json
+
+{"username": "{{payUsername}}", "password": "{{payPassword}}"}
+
+> {%
+    client.test("已有用户登录成功并返回Token和用户ID", function () {
+        client.assert(response.status === 200 && response.body.code === 0, "登录应返回200/code0");
+        const login = response.body.data;
+        client.assert(login && typeof login.token === "string" && login.token.length > 0, "应返回非空Token");
+        client.assert(login.user && Number.isInteger(login.user.id) && login.user.id > 0, "应返回用户主键");
+        client.global.set("mallAuthUserToken", response.body.data.token);
+        client.global.set("mallAuthUserId", String(response.body.data.user.id));
+    });
+%}
+
+### 01 查询商品并记录初始库存S（至少1）；开始一轮新测试
+< {%
+    if (!client.global.get("mallAuthUserToken")) {
+        throw new Error("未读取到登录Token，请重跑已修正的00登录，并确认Tests通过");
+    }
+    client.global.set("mallPayProductId", "");
+    client.global.set("mallPayStockBefore", "");
+    client.global.set("mallPayOrderId", "");
+    client.global.set("mallPayCreatedSnapshot", "");
+    client.global.set("mallPayFirstSnapshot", "");
+    client.global.set("mallPayRepeatVerified", "");
+    client.global.set("mallPayRequestId", $random.uuid);
+%}
+# @no-cookie-jar
+GET {{baseUrl}}/products/{{payProductId}}
+Accept: application/json
+
+> {%
+    client.test("商品上架且库存至少1件", function () {
+        client.assert(response.status === 200 && response.body.code === 0, "商品查询应成功");
+        const product = response.body.data;
+        client.assert(product && product.id > 0, "应返回商品主键");
+        client.assert(product.status === "ON_SALE", "请选择上架商品");
+        client.assert(Number.isInteger(product.stock) && product.stock >= 1, "库存必须至少1件");
+        client.global.set("mallPayProductId", String(response.body.data.id));
+        client.global.set("mallPayStockBefore", String(response.body.data.stock));
+    });
+%}
+
+### 02 创建一笔待支付订单，购买1件；重试02复用本轮requestId
+< {%
+    if (!client.global.get("mallAuthUserToken") || !client.global.get("mallPayProductId")) {
+        throw new Error("请先登录并成功执行01");
+    }
+    client.global.set("mallPayOrderId", "");
+    client.global.set("mallPayCreatedSnapshot", "");
+    client.global.set("mallPayFirstSnapshot", "");
+%}
+# @no-cookie-jar
+POST {{baseUrl}}/orders/create
+Authorization: Bearer {{mallAuthUserToken}}
+Content-Type: application/json
+Accept: application/json
+
+{
+  "requestId": "{{mallPayRequestId}}",
+  "items": [
+    {"productId": {{mallPayProductId}}, "quantity": 1}
+  ]
+}
+
+> {%
+    client.test("创建一笔待支付订单", function () {
+        client.assert(response.status === 201 && response.body.code === 0, "下单应返回201/code0");
+        const order = response.body.data;
+        client.assert(order && order.id > 0, "应返回订单主键，支付路径使用此ID");
+        client.assert(order.status === "PENDING_PAYMENT", "应为待支付状态");
+        client.assert(order.items && order.items.length === 1, "应只有一条订单明细");
+        client.assert(order.items[0].productId === Number(client.global.get("mallPayProductId"))
+            && order.items[0].quantity === 1, "商品和购买数量应匹配");
+        client.global.set("mallPayOrderId", String(response.body.data.id));
+        client.global.set("mallPayCreatedSnapshot", JSON.stringify(response.body.data));
+    });
+%}
+
+### 03 下单后查询库存：应为S-1
+< {%
+    if (!client.global.get("mallPayOrderId")) {
+        throw new Error("请先成功执行02，不能使用旧订单");
+    }
+%}
+# @no-cookie-jar
+GET {{baseUrl}}/products/{{mallPayProductId}}
+Accept: application/json
+
+> {%
+    client.test("下单仅扣减1件库存", function () {
+        client.assert(response.status === 200 && response.body.code === 0, "商品查询应成功");
+        client.assert(response.body.data.stock === Number(client.global.get("mallPayStockBefore")) - 1,
+            "下单后库存应为S-1；请排除其他请求同时修改该商品");
+    });
+%}
+
+### 04 首次支付：无请求体，期望200/code0/PAID
+< {%
+    if (!client.global.get("mallAuthUserToken") || !client.global.get("mallPayOrderId")) {
+        throw new Error("请先登录并成功执行02");
+    }
+    client.global.set("mallPayFirstSnapshot", "");
+%}
+# @no-cookie-jar
+POST {{baseUrl}}/orders/{{mallPayOrderId}}/pay
+Authorization: Bearer {{mallAuthUserToken}}
+Accept: application/json
+
+> {%
+    client.test("支付成功且保留原订单金额和商品快照", function () {
+        client.assert(response.status === 200 && response.body.code === 0, "支付应返回200/code0");
+        const order = response.body.data;
+        const created = JSON.parse(client.global.get("mallPayCreatedSnapshot"));
+        client.assert(order && order.status === "PAID", "应转为PAID");
+        client.assert(order.id === created.id && order.orderNo === created.orderNo, "必须是原订单");
+        client.assert(order.totalAmount === created.totalAmount, "订单金额不能变化");
+        client.assert(order.createdAt === created.createdAt && order.expiresAt === created.expiresAt,
+            "创建时间和原到期时间不能被支付改写");
+        client.assert(JSON.stringify(order.items) === JSON.stringify(created.items), "商品快照不能变化");
+        client.global.set("mallPayFirstSnapshot", JSON.stringify(response.body.data));
+        client.log("首次支付后只读执行并保存paid_at/updated_at：SELECT id, status, paid_at, updated_at FROM orders WHERE id = "
+            + client.global.get("mallPayOrderId") + ";");
+    });
+%}
+
+### 05 首次支付后查询库存：仍应为S-1
+< {%
+    if (!client.global.get("mallPayFirstSnapshot")) {
+        throw new Error("请先成功执行04");
+    }
+%}
+# @no-cookie-jar
+GET {{baseUrl}}/products/{{mallPayProductId}}
+Accept: application/json
+
+> {%
+    client.test("首次支付不再次扣库存", function () {
+        client.assert(response.status === 200 && response.body.code === 0, "商品查询应成功");
+        client.assert(response.body.data.stock === Number(client.global.get("mallPayStockBefore")) - 1,
+            "支付后库存仍应为S-1");
+    });
+%}
+
+### 06 同一订单重复支付：仍返回200/PAID，响应与首次支付一致
+# 先保存04的数据库查询结果，再执行06，随后对比两次paid_at与updated_at应相同。
+< {%
+    client.global.set("mallPayRepeatVerified", "");
+    if (!client.global.get("mallAuthUserToken") || !client.global.get("mallPayFirstSnapshot")) {
+        throw new Error("请先登录并成功执行04");
+    }
+%}
+# @no-cookie-jar
+POST {{baseUrl}}/orders/{{mallPayOrderId}}/pay
+Authorization: Bearer {{mallAuthUserToken}}
+Accept: application/json
+
+> {%
+    client.test("重复支付保持首次结果", function () {
+        client.assert(response.status === 200 && response.body.code === 0, "重复支付应返回200/code0");
+        const first = JSON.parse(client.global.get("mallPayFirstSnapshot"));
+        client.assert(response.body.data && response.body.data.status === "PAID", "应保持PAID");
+        client.assert(JSON.stringify(response.body.data) === JSON.stringify(first), "重复支付应返回相同订单结果");
+        client.global.set("mallPayRepeatVerified", "true");
+        client.log("重复支付后只读执行，对比首次paid_at/updated_at：SELECT id, status, paid_at, updated_at FROM orders WHERE id = "
+            + client.global.get("mallPayOrderId") + ";");
+    });
+%}
+
+### 07 重复支付后查询库存：仍应为S-1
+< {%
+    if (!client.global.get("mallPayRepeatVerified")) {
+        throw new Error("请先成功执行04及06");
+    }
+%}
+# @no-cookie-jar
+GET {{baseUrl}}/products/{{mallPayProductId}}
+Accept: application/json
+
+> {%
+    client.test("重复支付不改变库存", function () {
+        client.assert(response.status === 200 && response.body.code === 0, "商品查询应成功");
+        client.assert(response.body.data.stock === Number(client.global.get("mallPayStockBefore")) - 1,
+            "重复支付后库存仍应为S-1");
+    });
+%}
+
+### 08 查询本轮订单操作记录：新订单应只有CREATE、PAY各一条
+# 先确认应用已重启并加载操作流水功能，再执行本文件00～08。
+< {%
+    if (!client.global.get("mallAuthUserToken") || !client.global.get("mallPayRepeatVerified")) {
+        throw new Error("请先成功执行00～07，再查询本轮订单流水");
+    }
+%}
+# @no-cookie-jar
+GET {{baseUrl}}/orders/{{mallPayOrderId}}/operations
+Authorization: Bearer {{mallAuthUserToken}}
+Accept: application/json
+
+> {%
+    client.test("首次动作有记录，重复支付不重复记录", function () {
+        client.assert(response.status === 200 && response.body.code === 0, "流水查询应返回200/code0");
+        const operations = response.body.data;
+        const orderId = Number(client.global.get("mallPayOrderId"));
+        const buyerId = Number(client.global.get("mallAuthUserId"));
+        const created = JSON.parse(client.global.get("mallPayCreatedSnapshot"));
+        client.assert(Array.isArray(operations) && operations.length === 2, "新订单应只有两条成功流水");
+        client.assert(operations[0].action === "CREATE" && operations[1].action === "PAY", "应按创建、支付排列");
+        client.assert(operations.every(operation => operation.orderId === orderId
+            && operation.operatorId === buyerId), "流水必须属于本轮订单及当前买家");
+        client.assert(operations[0].fromStatus === null
+            && operations[0].toStatus === "PENDING_PAYMENT", "CREATE状态转换应正确");
+        client.assert(operations[0].createdAt === created.createdAt, "创建流水时间应等于订单创建时间");
+        client.assert(operations[1].fromStatus === "PENDING_PAYMENT"
+            && operations[1].toStatus === "PAID", "PAY状态转换应正确");
+    });
+%}

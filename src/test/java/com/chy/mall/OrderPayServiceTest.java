@@ -15,6 +15,8 @@ import com.chy.mall.mapper.OrderMapper;
 import com.chy.mall.mapper.ProductInventoryMapper;
 import com.chy.mall.service.impl.OrderCreateTransactionService;
 import com.chy.mall.service.impl.OrderServiceImpl;
+import com.chy.mall.service.impl.OrderOperationLogService;
+import com.chy.mall.enums.OrderOperationAction;
 import com.chy.mall.vo.OrderVo;
 import com.chy.mall.vo.OrderItemVo;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
@@ -49,6 +51,8 @@ public class OrderPayServiceTest {
     private ProductInventoryMapper productInventoryMapper;
     @Mock
     private OrderCreateTransactionService orderCreateTransactionService;
+    @Mock
+    private OrderOperationLogService operationLogService;
     @InjectMocks
     private OrderServiceImpl orderService;
 
@@ -135,6 +139,8 @@ public class OrderPayServiceTest {
         LocalDateTime payTime = assertInstanceOf(LocalDateTime.class,
                 boundValue(setSql, "paid_at", "=", updateParameters));
         assertEquals(0, payTime.getNano());
+        verify(operationLogService).recordOperation(9001L, 77L, OrderOperationAction.PAY, payTime);
+        verifyNoMoreInteractions(operationLogService);
         assertEquals(payTime, boundValue(setSql, "updated_at", "=", updateParameters));
         assertFalse(setSql.contains("cancelled_at"), "支付不能写入取消时间");
 
@@ -219,7 +225,7 @@ public class OrderPayServiceTest {
         calls.verify(orderItemMapper).selectList(itemQueryCaptor.capture());
         // 不能跳过第一次条件UPDATE，也不能在识别已支付后追加第二次更新。
         verifyNoMoreInteractions(orderMapper, orderItemMapper);
-        verifyNoInteractions(productInventoryMapper, orderCreateTransactionService);
+        verifyNoInteractions(productInventoryMapper, orderCreateTransactionService, operationLogService);
 
         LambdaUpdateWrapper<OrderDo> update = updateCaptor.getValue();
         String updateWhere = update.getSqlSegment();
@@ -260,7 +266,7 @@ public class OrderPayServiceTest {
         calls.verify(orderMapper).update(isNull(), updateCaptor.capture());
         calls.verify(orderMapper).selectOne(orderQueryCaptor.capture());
         verifyNoMoreInteractions(orderMapper);
-        verifyNoInteractions(orderItemMapper, productInventoryMapper, orderCreateTransactionService);
+        verifyNoInteractions(orderItemMapper, productInventoryMapper, orderCreateTransactionService, operationLogService);
 
         // Mock不执行SQL，检查本次尝试及查询仍定位当前买家的同一订单。
         LambdaUpdateWrapper<OrderDo> update = updateCaptor.getValue();

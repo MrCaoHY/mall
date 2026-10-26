@@ -1,4 +1,4 @@
-package com.chy.mall.control;
+ package com.chy.mall.control;
 
 import com.chy.mall.common.ApiResponse;
 import com.chy.mall.dto.CreateOrderRequest;
@@ -7,17 +7,21 @@ import com.chy.mall.exception.ErrorCode;
 import com.chy.mall.security.AuthenticatedUser;
 import com.chy.mall.service.OrderService;
 import com.chy.mall.vo.OrderVo;
+import com.chy.mall.vo.OrderOperationLogVo;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Positive;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+
+import java.util.List;
 
 /**
  * 订单接口：买家身份来自当前请求的JWT认证结果。
@@ -75,5 +79,23 @@ public class OrderController {
             throw new BusinessException(ErrorCode.BUYER_IDENTITY_INVALID);
         }
         return ResponseEntity.ok(ApiResponse.success(orderService.pay(buyerId, orderId)));
+    }
+
+    /**
+     * 查询自己订单的成功动作流水，不接收客户端提供的操作者ID。
+     * 返回按业务时间和流水主键升序排列的记录；历史无流水的订单返回空列表。
+     */
+    @GetMapping("/{orderId}/operations")
+    public ResponseEntity<ApiResponse<List<OrderOperationLogVo>>> operations(
+            @PathVariable @Positive(message = "订单ID必须大于0") Long orderId,
+            @AuthenticationPrincipal AuthenticatedUser currentUser) {
+        if (currentUser == null) {
+            throw new BusinessException(ErrorCode.UNAUTHORIZED);
+        }
+        Long buyerId = currentUser.userId();
+        if (buyerId == null || buyerId <= 0) {
+            throw new BusinessException(ErrorCode.BUYER_IDENTITY_INVALID);
+        }
+        return ResponseEntity.ok(ApiResponse.success(orderService.listOperations(buyerId, orderId)));
     }
 }

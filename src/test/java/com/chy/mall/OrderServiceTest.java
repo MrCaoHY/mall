@@ -17,6 +17,8 @@ import com.chy.mall.mapper.ProductInventoryMapper;
 import com.chy.mall.mapper.ProductMapper;
 import com.chy.mall.service.impl.OrderCreateTransactionService;
 import com.chy.mall.service.impl.OrderServiceImpl;
+import com.chy.mall.service.impl.OrderOperationLogService;
+import com.chy.mall.enums.OrderOperationAction;
 import com.chy.mall.vo.OrderItemVo;
 import com.chy.mall.vo.OrderVo;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
@@ -50,8 +52,10 @@ public class OrderServiceTest {
     private final OrderMapper orderMapper = mock(OrderMapper.class);
     private final OrderItemMapper orderItemMapper = mock(OrderItemMapper.class);
 
-    private final OrderCreateTransactionService transactionService = new OrderCreateTransactionService(inventoryMapper, productMapper, orderMapper, orderItemMapper);
-    private final OrderServiceImpl service = new OrderServiceImpl(orderMapper, orderItemMapper, inventoryMapper, transactionService);
+    private final OrderOperationLogService operationLogService = mock(OrderOperationLogService.class);
+
+    private final OrderCreateTransactionService transactionService = new OrderCreateTransactionService(inventoryMapper, productMapper, orderMapper, orderItemMapper, operationLogService);
+    private final OrderServiceImpl service = new OrderServiceImpl(orderMapper, orderItemMapper, inventoryMapper, transactionService, operationLogService);
 
     @BeforeAll
     static void initializeInventoryMapping() {
@@ -115,7 +119,8 @@ public class OrderServiceTest {
 
         verify(productMapper).selectByIds(anyCollection());
         verify(inventoryMapper, times(2)).update(isNull(), any(Wrapper.class));
-        verifyNoMoreInteractions(productMapper, inventoryMapper, orderMapper, orderItemMapper);
+        verify(operationLogService).recordOperation(9001L, 77L, OrderOperationAction.CREATE, result.getCreatedAt());
+        verifyNoMoreInteractions(productMapper, inventoryMapper, orderMapper, orderItemMapper, operationLogService);
     }
 
     private static ProductDo product(Long id, String sku, String name, String price) {

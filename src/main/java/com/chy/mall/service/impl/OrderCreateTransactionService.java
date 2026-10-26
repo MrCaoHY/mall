@@ -7,6 +7,7 @@ import com.chy.mall.entity.OrderItemDo;
 import com.chy.mall.entity.ProductDo;
 import com.chy.mall.entity.ProductInventoryDo;
 import com.chy.mall.enums.OrderStatus;
+import com.chy.mall.enums.OrderOperationAction;
 import com.chy.mall.enums.ProductStatus;
 import com.chy.mall.exception.BusinessException;
 import com.chy.mall.exception.ErrorCode;
@@ -45,6 +46,7 @@ public class OrderCreateTransactionService {
     private final ProductMapper productMapper;
     private final OrderMapper orderMapper;
     private final OrderItemMapper orderItemMapper;
+    private final OrderOperationLogService operationLogService;
 
     /** 新事务先写订单主表竞争幂等唯一键，胜出后再扣库存和保存快照。 */
     @Transactional(propagation = Propagation.REQUIRES_NEW, rollbackFor = Exception.class)
@@ -131,6 +133,8 @@ public class OrderCreateTransactionService {
         if (insertedRows != orderItems.size()) {
             throw new IllegalStateException("订单明细保存失败");
         }
+        // 主表、库存、明细和CREATE流水必须一起提交，流水失败不能留下半张订单。
+        operationLogService.recordOperation(order.getId(), buyerId, OrderOperationAction.CREATE, createTime);
         //构建返回vo
         OrderVo result = new OrderVo();
         result.setId(order.getId());

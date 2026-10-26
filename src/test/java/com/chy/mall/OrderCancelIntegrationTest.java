@@ -14,6 +14,8 @@ import com.chy.mall.exception.BusinessException;
 import com.chy.mall.exception.ErrorCode;
 import com.chy.mall.mapper.OrderItemMapper;
 import com.chy.mall.mapper.OrderMapper;
+import com.chy.mall.mapper.OrderOperationLogMapper;
+import com.chy.mall.entity.OrderOperationLogDo;
 import com.chy.mall.mapper.ProductInventoryMapper;
 import com.chy.mall.mapper.ProductMapper;
 import com.chy.mall.service.OrderService;
@@ -110,6 +112,8 @@ class OrderCancelIntegrationTest {
     private OrderItemMapper orderItemMapper;
     @Autowired
     private PlatformTransactionManager transactionManager;
+    @Autowired
+    private OrderOperationLogMapper operationLogMapper;
 
     /**
      * 【动态测试环境变量注入】：
@@ -480,6 +484,7 @@ class OrderCancelIntegrationTest {
             Long orderId = orders.getFirst().getId();
             assertEquals(fixture.products().size(), orderItemMapper.delete(Wrappers.<OrderItemDo>lambdaQuery()
                     .eq(OrderItemDo::getOrderId, orderId)));
+            operationLogMapper.delete(Wrappers.<OrderOperationLogDo>lambdaQuery().eq(OrderOperationLogDo::getOrderId, orderId));
             assertEquals(1, orderMapper.deleteById(orderId));
             for (ProductDo product : fixture.products()) {
                 inventoryMapper.deleteById(product.getId());

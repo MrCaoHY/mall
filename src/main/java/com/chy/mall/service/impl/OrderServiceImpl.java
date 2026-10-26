@@ -7,6 +7,7 @@ import com.chy.mall.entity.OrderDo;
 import com.chy.mall.entity.OrderItemDo;
 import com.chy.mall.entity.ProductInventoryDo;
 import com.chy.mall.enums.OrderStatus;
+import com.chy.mall.enums.OrderOperationAction;
 import com.chy.mall.exception.BusinessException;
 import com.chy.mall.exception.ErrorCode;
 import com.chy.mall.mapper.OrderItemMapper;
@@ -16,6 +17,7 @@ import com.chy.mall.service.OrderService;
 import com.chy.mall.util.LogSupport;
 import com.chy.mall.vo.OrderItemVo;
 import com.chy.mall.vo.OrderVo;
+import com.chy.mall.vo.OrderOperationLogVo;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DuplicateKeyException;
@@ -30,7 +32,7 @@ import java.time.LocalDateTime;
 import java.util.*;
 
 /**
- * 订单入口：事务外识别幂等重试，调用独立创建事务；取消则用单一事务控制状态与库存。
+ * 订单入口：识别下单重试，支付/取消按条件转换状态；成功流水与业务共用事务。
  */
 @Service
 @RequiredArgsConstructor
@@ -42,6 +44,7 @@ public class OrderServiceImpl implements OrderService {
     private final OrderItemMapper orderItemMapper;
     private final ProductInventoryMapper productInventoryMapper;
     private final OrderCreateTransactionService orderCreateTransactionService;
+    private final OrderOperationLogService operationLogService;
 
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
     @Override
@@ -139,6 +142,8 @@ public class OrderServiceImpl implements OrderService {
                 throw new BusinessException(ErrorCode.PRODUCT_INVENTORY_MISSING);
             }
         }
+        // 只在本次状态转换及库存恢复全部成功后记流水，重复取消分支已提前返回。
+        operationLogService.recordOperation(orderId, buyerId, OrderOperationAction.CANCEL, cancelTime);
         // 复用本次查出的明细组装快照，避免为返回结果再查询一次。
         return buildExistingOrderVo(order, orderItems);
     }
@@ -170,9 +175,29 @@ public class OrderServiceImpl implements OrderService {
         }
         // 仅本次成功转换状态时注册回调，记录事务实际提交或回滚结果。
         LogSupport.transactionOutcome(log, "order_pay", orderId);
+        // 流水失败会抛异常并撤销支付状态；已支付重试分支不写新流水。
+        operationLogService.recordOperation(orderId, buyerId, OrderOperationAction.PAY, payTime);
         return buildExistingOrderVo(orderDo);
     }
 
+
+    /**
+     * 查询当前买家的订单流水；其他买家的订单与不存在的订单统一返回404。
+     * 先校验归属再查流水，旧订单没有历史记录时正常返回空列表。
+     */
+    @Override
+    @Transactional(readOnly = true)
+    public List<OrderOperationLogVo> listOperations(Long buyerId, Long orderId) {
+        if (buyerId == null || buyerId <= 0 || orderId == null || orderId <= 0) {
+            throw new BusinessException(ErrorCode.REQUEST_INVALID, "用户ID和订单ID必须大于0");
+        }
+        OrderDo order = orderMapper.selectOne(Wrappers.<OrderDo>lambdaQuery()
+                .eq(OrderDo::getId, orderId).eq(OrderDo::getBuyerId, buyerId));
+        if (order == null) {
+            throw new BusinessException(ErrorCode.ORDER_NOT_FOUND);
+        }
+        return operationLogService.listByOrderId(orderId);
+    }
     /**
      * 尝试将当前用户的待支付订单更新为已取消。
      * 参数由公开取消入口统一校验；本方法只负责状态转换，不恢复库存。

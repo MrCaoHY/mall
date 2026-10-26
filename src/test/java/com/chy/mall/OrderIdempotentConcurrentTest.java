@@ -1,14 +1,18 @@
 package com.chy.mall;
 
+import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.chy.mall.dto.CreateOrderItemRequest;
 import com.chy.mall.dto.CreateOrderRequest;
 import com.chy.mall.entity.ProductDo;
 import com.chy.mall.entity.ProductInventoryDo;
 import com.chy.mall.enums.OrderStatus;
+import com.chy.mall.enums.OrderOperationAction;
 import com.chy.mall.enums.ProductStatus;
 import com.chy.mall.exception.BusinessException;
 import com.chy.mall.mapper.OrderItemMapper;
 import com.chy.mall.mapper.OrderMapper;
+import com.chy.mall.mapper.OrderOperationLogMapper;
+import com.chy.mall.entity.OrderOperationLogDo;
 import com.chy.mall.mapper.ProductInventoryMapper;
 import com.chy.mall.mapper.ProductMapper;
 import com.chy.mall.service.OrderService;
@@ -72,6 +76,8 @@ public class OrderIdempotentConcurrentTest {
     private JdbcTemplate jdbcTemplate;
     @Autowired
     private PlatformTransactionManager transactionManager;
+    @Autowired
+    private OrderOperationLogMapper operationLogMapper;
 
     /**
      * 场景一：两个请求均通过入口未命中后，竞争同一个requestId和最后一件库存。
@@ -145,6 +151,10 @@ public class OrderIdempotentConcurrentTest {
                     "SELECT COUNT(*) FROM order_items WHERE order_id = ?",
                     Long.class, expectedOrderId);
             assertEquals(1L, itemCount, "数据库中应恰好一条订单明细");
+            assertEquals(1L, operationLogMapper.selectCount(Wrappers.<OrderOperationLogDo>lambdaQuery()
+                    .eq(OrderOperationLogDo::getOrderId, expectedOrderId)
+                    .eq(OrderOperationLogDo::getAction, OrderOperationAction.CREATE)),
+                    "并发幂等下单只能生成一条CREATE流水");
             Integer savedQuantity = jdbcTemplate.queryForObject(
                     "SELECT quantity FROM order_items WHERE order_id = ? AND product_id = ?",
                     Integer.class, expectedOrderId, productId);
@@ -320,6 +330,7 @@ public class OrderIdempotentConcurrentTest {
             List<Long> orderIds = jdbcTemplate.queryForList(
                     "SELECT id FROM orders WHERE request_id = ?", Long.class, requestId);
             for (Long orderId : orderIds) {
+                operationLogMapper.delete(Wrappers.<OrderOperationLogDo>lambdaQuery().eq(OrderOperationLogDo::getOrderId, orderId));
                 jdbcTemplate.update("DELETE FROM order_items WHERE order_id = ?", orderId);
             }
             jdbcTemplate.update("DELETE FROM orders WHERE request_id = ?", requestId);
