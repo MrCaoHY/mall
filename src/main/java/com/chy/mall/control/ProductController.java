@@ -4,6 +4,8 @@ package com.chy.mall.control;
 import com.chy.mall.common.ApiResponse;
 import com.chy.mall.dto.CreateProductRequest;
 import com.chy.mall.dto.ProductPageQuery;
+import com.chy.mall.dto.UpdateProductRequest;
+import com.chy.mall.dto.UpdateProductStatusRequest;
 import com.chy.mall.service.ProductService;
 import com.chy.mall.vo.PageVo;
 import com.chy.mall.vo.ProductVo;
@@ -33,6 +35,22 @@ public class ProductController {
     public ResponseEntity<ApiResponse<ProductVo>> getById(@PathVariable @Positive(message = "商品ID必须大于0") Long id) {
         ProductVo productVo = productService.getById(id);
         return ResponseEntity.ok(ApiResponse.success(productVo));
+    }
+
+    /** 管理员编辑商品名称和价格，权限沿用商品写接口规则。 */
+    @PutMapping("/{id}")
+    public ResponseEntity<ApiResponse<ProductVo>> update(
+            @PathVariable @Positive(message = "商品ID必须大于0") Long id,
+            @Valid @RequestBody UpdateProductRequest request) {
+        return ResponseEntity.ok(ApiResponse.success(productService.update(id, request)));
+    }
+
+    /** 管理员设置目标上下架状态，重复设置同一状态仍成功。 */
+    @PutMapping("/{id}/status")
+    public ResponseEntity<ApiResponse<ProductVo>> updateStatus(
+            @PathVariable @Positive(message = "商品ID必须大于0") Long id,
+            @Valid @RequestBody UpdateProductStatusRequest request) {
+        return ResponseEntity.ok(ApiResponse.success(productService.updateStatus(id, request)));
     }
 
     // GET /products/page?page=1&size=10&keyword=Java&status=ON_SALE

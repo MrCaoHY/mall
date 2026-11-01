@@ -5,6 +5,8 @@ import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.chy.mall.dto.CreateProductRequest;
 import com.chy.mall.dto.ProductPageQuery;
+import com.chy.mall.dto.UpdateProductRequest;
+import com.chy.mall.dto.UpdateProductStatusRequest;
 import com.chy.mall.entity.ProductDo;
 import com.chy.mall.entity.ProductInventoryDo;
 import com.chy.mall.enums.ProductStatus;
@@ -88,6 +90,50 @@ public class ProductServiceImpl implements ProductService {
 
         log.debug("event=product_detail_read productId={}", productId);
         return toProductVo(product, inventory);
+    }
+
+    /**
+     * 仅设置编辑表单允许修改的字段；SKU、状态和库存均不从该请求写入。
+     * request字段格式由DTO契约保证，这里保护调用参数及实际更新结果。
+     */
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public ProductVo update(Long productId, UpdateProductRequest request) {
+        if (productId == null || productId <= 0 || request == null) {
+            throw new BusinessException(ErrorCode.REQUEST_INVALID, "商品ID或修改请求不合法");
+        }
+        int affectedRows = productMapper.update(null, Wrappers.<ProductDo>lambdaUpdate()
+                .eq(ProductDo::getId, productId)
+                .set(ProductDo::getName, request.getName())
+                .set(ProductDo::getPrice, request.getPrice()));
+        if (affectedRows != 0 && affectedRows != 1) {
+            throw new IllegalStateException("商品更新影响行数异常");
+        }
+        LogSupport.transactionOutcome(log, "product_update", productId);
+        // 某些连接配置下，同值更新可能返回0；回查区分“不存在”和“值未变”。
+        // 回查及库存读取在本次写事务内，组装失败时不能留下已提交的修改。
+        return getById(productId);
+    }
+
+    /**
+     * 只改变是否允许新的下单意图，不修改库存，也不取消已有订单。
+     * 下单读取到在售状态后已开始的事务可继续完成，沿用现有读取时裁决的约定。
+     */
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public ProductVo updateStatus(Long productId, UpdateProductStatusRequest request) {
+        if (productId == null || productId <= 0 || request == null) {
+            throw new BusinessException(ErrorCode.REQUEST_INVALID, "商品ID或状态请求不合法");
+        }
+        int affectedRows = productMapper.update(null, Wrappers.<ProductDo>lambdaUpdate()
+                .eq(ProductDo::getId, productId)
+                .set(ProductDo::getStatus, request.getStatus()));
+        if (affectedRows != 0 && affectedRows != 1) {
+            throw new IllegalStateException("商品状态更新影响行数异常");
+        }
+        LogSupport.transactionOutcome(log, "product_status_update", productId);
+        // 同值更新可能返回0，回查可区分不存在；组装失败与状态修改一起回滚。
+        return getById(productId);
     }
 
     @Override
