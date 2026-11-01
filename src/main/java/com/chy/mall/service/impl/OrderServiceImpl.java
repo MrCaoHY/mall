@@ -1,8 +1,10 @@
 package com.chy.mall.service.impl;
 
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.chy.mall.dto.CreateOrderItemRequest;
 import com.chy.mall.dto.CreateOrderRequest;
+import com.chy.mall.dto.OrderPageQuery;
 import com.chy.mall.entity.OrderDo;
 import com.chy.mall.entity.OrderItemDo;
 import com.chy.mall.entity.ProductInventoryDo;
@@ -17,6 +19,7 @@ import com.chy.mall.service.OrderService;
 import com.chy.mall.util.LogSupport;
 import com.chy.mall.vo.OrderItemVo;
 import com.chy.mall.vo.OrderVo;
+import com.chy.mall.vo.PageVo;
 import com.chy.mall.vo.OrderOperationLogVo;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -90,9 +93,7 @@ public class OrderServiceImpl implements OrderService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public OrderVo cancel(Long buyerId, Long orderId) {
-        if (buyerId == null || buyerId <= 0) {
-            throw new BusinessException(ErrorCode.REQUEST_INVALID, "用户ID必须大于0");
-        }
+        validateBuyerId(buyerId);
         if (orderId == null || orderId <= 0) {
             throw new BusinessException(ErrorCode.REQUEST_INVALID, "订单ID必须大于0");
         }
@@ -151,9 +152,7 @@ public class OrderServiceImpl implements OrderService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public OrderVo pay(Long buyerId, Long orderId) {
-        if (buyerId == null || buyerId <= 0) {
-            throw new BusinessException(ErrorCode.REQUEST_INVALID, "用户ID必须大于0");
-        }
+        validateBuyerId(buyerId);
         if (orderId == null || orderId <= 0) {
             throw new BusinessException(ErrorCode.REQUEST_INVALID, "订单ID必须大于0");
         }
@@ -188,8 +187,9 @@ public class OrderServiceImpl implements OrderService {
     @Override
     @Transactional(readOnly = true)
     public List<OrderOperationLogVo> listOperations(Long buyerId, Long orderId) {
-        if (buyerId == null || buyerId <= 0 || orderId == null || orderId <= 0) {
-            throw new BusinessException(ErrorCode.REQUEST_INVALID, "用户ID和订单ID必须大于0");
+        validateBuyerId(buyerId);
+        if (orderId == null || orderId <= 0) {
+            throw new BusinessException(ErrorCode.REQUEST_INVALID, "订单ID必须大于0");
         }
         OrderDo order = orderMapper.selectOne(Wrappers.<OrderDo>lambdaQuery()
                 .eq(OrderDo::getId, orderId).eq(OrderDo::getBuyerId, buyerId));
@@ -224,9 +224,7 @@ public class OrderServiceImpl implements OrderService {
      * Service需要保护自己的公开入口，不能只依赖Controller触发DTO校验。
      */
     private TreeMap<Long, Integer> validateAndBuildProductMap(Long buyerId, CreateOrderRequest request) {
-        if (buyerId == null || buyerId <= 0) {
-            throw new BusinessException(ErrorCode.REQUEST_INVALID, "用户ID必须大于0");
-        }
+        validateBuyerId(buyerId);
 
         if (request == null) {
             throw new BusinessException(ErrorCode.REQUEST_INVALID, "订单请求不能为空");
@@ -254,6 +252,13 @@ public class OrderServiceImpl implements OrderService {
             }
         }
         return orderProductMap;
+    }
+
+    /** 所有公开买家入口共用身份约束，直接调用Service也保持相同的403错误语义。 */
+    private void validateBuyerId(Long buyerId) {
+        if (buyerId == null || buyerId <= 0) {
+            throw new BusinessException(ErrorCode.BUYER_IDENTITY_INVALID);
+        }
     }
 
     private boolean isValidRequestId(String requestId) {
@@ -328,5 +333,57 @@ public class OrderServiceImpl implements OrderService {
                 .set(OrderDo::getPaidAt,payTime)
                 .set(OrderDo::getUpdatedAt,payTime)
         );
+    }
+
+    /** 主表分页后一次读取当前页明细，买家筛选同时作用于记录和总数。 */
+    @Override
+    @Transactional(readOnly = true)
+    public PageVo<OrderVo> page(Long buyerId, OrderPageQuery query) {
+        validateBuyerId(buyerId);
+        if (query == null
+                || query.getPage() == null || query.getPage() < 1
+                || query.getSize() == null || query.getSize() < 1 || query.getSize() > 100) {
+            throw new BusinessException(ErrorCode.REQUEST_INVALID, "分页参数不合法");
+        }
+        Page<OrderDo> orders = orderMapper.selectPage(new Page<>(query.getPage(), query.getSize()),
+                Wrappers.<OrderDo>lambdaQuery()
+                        .eq(OrderDo::getBuyerId, buyerId)
+                        .eq(query.getStatus() != null, OrderDo::getStatus, query.getStatus())
+                        .orderByDesc(OrderDo::getCreatedAt, OrderDo::getId));
+        PageVo<OrderVo> result = new PageVo<>();
+        result.setPage(query.getPage());
+        result.setSize(query.getSize());
+        result.setTotal(orders.getTotal());
+        if (orders.getRecords().isEmpty()) {
+            return result;
+        }
+        List<Long> ids = orders.getRecords().stream().map(OrderDo::getId).toList();
+        List<OrderItemDo> items = orderItemMapper.selectList(Wrappers.<OrderItemDo>lambdaQuery().in(OrderItemDo::getOrderId, ids).orderByAsc(OrderItemDo::getOrderId, OrderItemDo::getProductId, OrderItemDo::getId));
+        Map<Long, List<OrderItemDo>> itemsByOrder = new HashMap<>();
+        for (OrderItemDo item : items) {
+            itemsByOrder.computeIfAbsent(item.getOrderId(), ignored -> new ArrayList<>()).add(item);
+        }
+        result.setRecords(orders.getRecords().stream()
+                .map(order -> buildExistingOrderVo(order, itemsByOrder.getOrDefault(order.getId(), List.of())))
+                .toList());
+        return result;
+    }
+
+    /** 先确认订单归属，再读取明细，避免向其他买家暴露订单信息。 */
+    @Override
+    @Transactional(readOnly = true)
+    public OrderVo findById(Long buyerId, Long orderId) {
+        validateBuyerId(buyerId);
+        if (orderId == null || orderId <= 0) {
+            throw new BusinessException(ErrorCode.REQUEST_INVALID, "订单ID必须大于0");
+        }
+        OrderDo order = orderMapper.selectOne(Wrappers.<OrderDo>lambdaQuery()
+                .eq(OrderDo::getId, orderId)
+                .eq(OrderDo::getBuyerId, buyerId));
+        // 查无和非本人订单统一404；此时不能继续查明细或组装空订单。
+        if (order == null) {
+            throw new BusinessException(ErrorCode.ORDER_NOT_FOUND);
+        }
+        return buildExistingOrderVo(order);
     }
 }

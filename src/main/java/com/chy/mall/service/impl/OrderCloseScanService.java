@@ -21,6 +21,12 @@ import java.util.List;
 public class OrderCloseScanService {
     private final OrderMapper orderMapper;
     private final OrderCloseTransactionService orderCloseTransactionService;
+    //本轮扫描截止时间
+    private LocalDateTime cycleCutoff;
+    //上一批最后一条订单到期时间
+    private LocalDateTime lastExpiresAt;
+    //上一批最后一条订单id
+    private Long lastId;
 
     /**
      * 查找一批候选订单；是否真正关闭由后续单笔事务再次判断。
@@ -29,6 +35,8 @@ public class OrderCloseScanService {
         if (scanTime == null) {
             throw new IllegalArgumentException("扫描截止时间不能为空");
         }
+
+
         // 只查询候选主键；相同到期时间使用主键排序，保证每批结果顺序稳定。
         Page<OrderDo> page = orderMapper.selectPage(new Page<>(1, 100, false),
                 Wrappers.<OrderDo>lambdaQuery()
@@ -46,9 +54,19 @@ public class OrderCloseScanService {
      * 使用 NEVER 传播机制防止外层大事务，每笔订单内部由独立事务提交或回滚。
      */
     @Transactional(propagation = Propagation.NEVER)
-    public int closeExpiredOrdersBatch() {
-        LocalDateTime now = LocalDateTime.now().withNano(0);
-        List<Long> expiredOrderIds = findExpiredOrderIds(now);
+    public synchronized int closeExpiredOrdersBatch() {
+        if (cycleCutoff == null) {
+            cycleCutoff = LocalDateTime.now().withNano(0);
+        }
+        List<OrderDo> expiredOrders = findExpiredOrderCandidates(cycleCutoff, lastExpiresAt, lastId);
+
+        List<Long> expiredOrderIds = expiredOrders.stream().map(OrderDo::getId).toList();
+        if (expiredOrderIds.isEmpty()) {
+            cycleCutoff = null;
+            lastExpiresAt = null;
+            lastId = null;
+            return 0;
+        }
         int closed = 0;
         int skipped = 0;
         int failed = 0;
@@ -67,7 +85,33 @@ public class OrderCloseScanService {
                 log.error("event=order_close_scan_item_failed orderId={}", orderId, LogSupport.safeStackTrace(e));
             }
         }
+        lastExpiresAt = expiredOrders.get(expiredOrders.size() - 1).getExpiresAt();
+        lastId = expiredOrderIds.get(expiredOrderIds.size() - 1);
         log.info("event=order_close_scan finished total={} closed={} skipped={} failed={}", expiredOrderIds.size(), closed, skipped, failed);
         return closed;
+    }
+
+    /**
+     * 查询游标之后的一批候选；两项游标都为空时查询首页。
+     * 只返回id和expiresAt，供调用方继续扫描，不作为完整订单实体使用。
+     */
+    public List<OrderDo> findExpiredOrderCandidates(LocalDateTime scanTime, LocalDateTime lastExpiresAt, Long lastId) {
+        if (scanTime == null) {
+            throw new IllegalArgumentException("扫描截止时间不能为空");
+        }
+        if ((lastExpiresAt == null) != (lastId == null) || (lastId != null && lastId <= 0)) {
+            throw new IllegalArgumentException("游标时间和正数订单ID必须同时提供");
+        }
+        var query = Wrappers.<OrderDo>lambdaQuery()
+                .select(OrderDo::getId, OrderDo::getExpiresAt)
+                .eq(OrderDo::getStatus, OrderStatus.PENDING_PAYMENT)
+                .le(OrderDo::getExpiresAt, scanTime);
+        if (lastId != null) {
+            // OR必须嵌套在AND分组内，避免绕过待支付和截止时间条件。
+            query.and(cursor -> cursor.gt(OrderDo::getExpiresAt, lastExpiresAt)
+                    .or(sameTime -> sameTime.eq(OrderDo::getExpiresAt, lastExpiresAt)
+                            .gt(OrderDo::getId, lastId)));
+        }
+        return orderMapper.selectList(query.orderByAsc(OrderDo::getExpiresAt, OrderDo::getId).last("LIMIT 100"));
     }
 }

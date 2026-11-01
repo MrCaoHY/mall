@@ -43,3 +43,9 @@ logging:
       max-history: ${LOG_MAX_HISTORY:14}
       total-size-cap: ${LOG_TOTAL_SIZE_CAP:1GB}
       clean-history-on-start: true
+mall:
+  order:
+    close-schedule:
+      enabled: true
+      delay-ms: 10000
+      initial-delay-ms: 10000

@@ -2,7 +2,7 @@ package com.chy.mall;
 
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
-import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.chy.mall.dto.CreateOrderItemRequest;
 import com.chy.mall.dto.CreateOrderRequest;
 import com.chy.mall.entity.*;
@@ -32,12 +32,13 @@ import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
-/** 候选查询定向为测试专用ID；单笔业务、数据库操作和事务均真实。 */
+/** 候选SQL附加本次专用ID范围；筛选、游标、单笔业务及事务均由真实数据库执行。 */
 @SpringBootTest
 @EnabledIfSystemProperty(named = "mall.order.scan.enabled", matches = "true")
 class OrderCloseBatchIntegrationTest {
@@ -118,29 +119,27 @@ class OrderCloseBatchIntegrationTest {
             assertEquals(3, inventoryMapper.selectById(productIds.getFirst()).getStock());
             assertEquals(3, inventoryMapper.selectById(productIds.get(1)).getStock());
 
-            // 只替换全局候选分页查询，禁止批处理触及现有订单；先验证该桩确实生效。
+            // 给真实候选SQL追加本次ID范围，禁止触及旧单；保留真实游标条件及LIMIT。
             OrderMapper mapperObserver = mapperObserver(orderMapper);
+            var realSelects = mockingDetails(mapperObserver).getMockCreationSettings().getDefaultAnswer();
             doAnswer(invocation -> {
-                Page<OrderDo> page = invocation.getArgument(0);
-                List<OrderDo> candidates = new ArrayList<>();
-                for (Long id : orderIds) {
-                    OrderDo candidate = new OrderDo();
-                    candidate.setId(id);
-                    candidates.add(candidate);
-                }
-                page.setRecords(candidates);
-                return page;
-            }).when(mapperObserver).selectPage(any(Page.class), any(Wrapper.class));
-            assertEquals(orderIds, scanService.findExpiredOrderIds(LocalDateTime.now()), "定向候选桩必须先生效");
+                LambdaQueryWrapper<OrderDo> query = invocation.getArgument(0);
+                assertEquals("id,expires_at", query.getSqlSelect());
+                query.in(OrderDo::getId, orderIds);
+                return realSelects.answer(invocation);
+            }).when(mapperObserver).selectList(any(Wrapper.class));
+            assertEquals(orderIds, scanService.findExpiredOrderCandidates(LocalDateTime.now(), null, null)
+                    .stream().map(OrderDo::getId).toList(), "专用ID范围必须先生效");
             clearInvocations(mapperObserver);
 
+            AtomicBoolean retryEnabled = new AtomicBoolean(false);
             OrderOperationLogService logObserver = AopTestUtils.getUltimateTargetObject(operationLogService);
             assertTrue(mockingDetails(logObserver).isMock());
             doAnswer(invocation -> {
                 invocation.callRealMethod();
                 Long orderId = invocation.getArgument(0);
                 OrderOperationAction action = invocation.getArgument(2);
-                if (orderId.equals(failedId) && action == OrderOperationAction.CLOSE) {
+                if (orderId.equals(failedId) && action == OrderOperationAction.CLOSE && !retryEnabled.get()) {
                     assertTrue(TransactionSynchronizationManager.isActualTransactionActive());
                     assertEquals(OrderStatus.CLOSED, orderMapper.selectById(failedId).getStatus());
                     assertEquals(5, inventoryMapper.selectById(productIds.getFirst()).getStock());
@@ -151,7 +150,7 @@ class OrderCloseBatchIntegrationTest {
             }).when(logObserver).recordOperation(anyLong(), anyLong(), any(OrderOperationAction.class), any(LocalDateTime.class));
 
             assertEquals(1, scanService.closeExpiredOrdersBatch());
-            verify(mapperObserver, times(1)).selectPage(any(Page.class), any(Wrapper.class));
+            verify(mapperObserver, times(1)).selectList(any(Wrapper.class));
             assertFalse(TransactionSynchronizationManager.isActualTransactionActive());
             assertEquals(beforeFailure, orderMapper.selectById(failedId));
             assertEquals(3, inventoryMapper.selectById(productIds.getFirst()).getStock());
@@ -166,6 +165,22 @@ class OrderCloseBatchIntegrationTest {
                     successfulOperations.stream().map(OrderOperationLogDo::getAction).toList());
             assertEquals(0L, successfulOperations.get(1).getOperatorId());
             assertEquals(successful.getUpdatedAt(), successfulOperations.get(1).getCreatedAt());
+            // 本轮已越过失败单；空批回卷后，下轮重新发现它并成功关闭。
+            assertEquals(0, scanService.closeExpiredOrdersBatch());
+            assertEquals(beforeFailure, orderMapper.selectById(failedId));
+            retryEnabled.set(true);
+            assertEquals(1, scanService.closeExpiredOrdersBatch());
+            OrderDo retried = orderMapper.selectById(failedId);
+            assertEquals(OrderStatus.CLOSED, retried.getStatus());
+            assertEquals(5, inventoryMapper.selectById(productIds.getFirst()).getStock());
+            assertEquals(failedItems, items(failedId));
+            List<OrderOperationLogDo> retriedOperations = operations(failedId);
+            assertEquals(List.of(OrderOperationAction.CREATE, OrderOperationAction.CLOSE),
+                    retriedOperations.stream().map(OrderOperationLogDo::getAction).toList());
+            assertEquals(0L, retriedOperations.get(1).getOperatorId());
+            assertEquals(retried.getUpdatedAt(), retriedOperations.get(1).getCreatedAt());
+            assertEquals(0, scanService.closeExpiredOrdersBatch(), "测试结束前通过空批重置本周期");
+            verify(mapperObserver, times(4)).selectList(any(Wrapper.class));
             passed = true;
         } finally {
             if (passed) {
@@ -206,7 +221,7 @@ class OrderCloseBatchIntegrationTest {
             assertTrue(TransactionSynchronizationManager.isActualTransactionActive());
             assertThrows(IllegalTransactionStateException.class, () -> scanService.closeExpiredOrdersBatch());
         });
-        verify(observer, never()).selectPage(any(Page.class), any(Wrapper.class));
+        verify(observer, never()).selectList(any(Wrapper.class));
     }
 
     private List<OrderItemDo> items(Long orderId) {

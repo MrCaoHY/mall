@@ -2,11 +2,13 @@
 
 import com.chy.mall.common.ApiResponse;
 import com.chy.mall.dto.CreateOrderRequest;
+import com.chy.mall.dto.OrderPageQuery;
 import com.chy.mall.exception.BusinessException;
 import com.chy.mall.exception.ErrorCode;
 import com.chy.mall.security.AuthenticatedUser;
 import com.chy.mall.service.OrderService;
 import com.chy.mall.vo.OrderVo;
+import com.chy.mall.vo.PageVo;
 import com.chy.mall.vo.OrderOperationLogVo;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Positive;
@@ -15,6 +17,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.ModelAttribute;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -24,7 +27,7 @@ import org.springframework.web.bind.annotation.RestController;
 import java.util.List;
 
 /**
- * 订单接口：买家身份来自当前请求的JWT认证结果。
+ * 订单接口：从JWT认证结果取买家身份，ID合法性与订单归属由Service统一校验。
  */
 @RestController
 @RequestMapping("/orders")
@@ -41,9 +44,6 @@ public class OrderController {
             throw new BusinessException(ErrorCode.UNAUTHORIZED);
         }
         Long buyerId = currentUser.userId();
-        if (buyerId == null || buyerId <= 0) {
-            throw new BusinessException(ErrorCode.BUYER_IDENTITY_INVALID);
-        }
         OrderVo order = orderService.create(buyerId, request);
         return ResponseEntity.status(HttpStatus.CREATED)
                 .body(ApiResponse.success(order));
@@ -59,9 +59,6 @@ public class OrderController {
             throw new BusinessException(ErrorCode.UNAUTHORIZED);
         }
         Long buyerId = currentUser.userId();
-        if (buyerId == null || buyerId <= 0) {
-            throw new BusinessException(ErrorCode.BUYER_IDENTITY_INVALID);
-        }
         return ResponseEntity.ok(ApiResponse.success(orderService.cancel(buyerId, orderId)));
     }
 
@@ -75,9 +72,6 @@ public class OrderController {
             throw new BusinessException(ErrorCode.UNAUTHORIZED);
         }
         Long buyerId = currentUser.userId();
-        if (buyerId == null || buyerId <= 0) {
-            throw new BusinessException(ErrorCode.BUYER_IDENTITY_INVALID);
-        }
         return ResponseEntity.ok(ApiResponse.success(orderService.pay(buyerId, orderId)));
     }
 
@@ -93,9 +87,30 @@ public class OrderController {
             throw new BusinessException(ErrorCode.UNAUTHORIZED);
         }
         Long buyerId = currentUser.userId();
-        if (buyerId == null || buyerId <= 0) {
-            throw new BusinessException(ErrorCode.BUYER_IDENTITY_INVALID);
-        }
         return ResponseEntity.ok(ApiResponse.success(orderService.listOperations(buyerId, orderId)));
+    }
+
+    /** GET /orders：使用查询参数分页；客户端不能指定要查询的买家。 */
+    @GetMapping
+    public ResponseEntity<ApiResponse<PageVo<OrderVo>>> page(
+            @Valid @ModelAttribute OrderPageQuery query,
+            @AuthenticationPrincipal AuthenticatedUser currentUser) {
+        if (currentUser == null) {
+            throw new BusinessException(ErrorCode.UNAUTHORIZED);
+        }
+        Long buyerId = currentUser.userId();
+        return ResponseEntity.ok(ApiResponse.success(orderService.page(buyerId, query)));
+    }
+
+    /** 查询当前认证买家的单笔订单，包含下单时的商品快照。 */
+    @GetMapping("/{orderId}")
+    public ResponseEntity<ApiResponse<OrderVo>> orderDetail(
+            @AuthenticationPrincipal AuthenticatedUser currentUser,
+            @PathVariable @Positive(message = "订单ID必须大于0") Long orderId) {
+        if (currentUser == null) {
+            throw new BusinessException(ErrorCode.UNAUTHORIZED);
+        }
+        Long buyerId = currentUser.userId();
+        return ResponseEntity.ok(ApiResponse.success(orderService.findById(buyerId, orderId)));
     }
 }

@@ -13,6 +13,7 @@ import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
+import org.springframework.web.method.annotation.HandlerMethodValidationException;
 
 /**
  * HTTP异常出口：业务错误保留约定提示，系统异常统一返回通用500。
@@ -61,6 +62,10 @@ public class GlobalExceptionHandler {
         // 保留Security的401/403处理，不能被通用500吞掉。
         if (exception instanceof AuthenticationException || exception instanceof AccessDeniedException) {
             throw exception;
+        }
+        // 路径等方法入参约束失败也使用项目40001；返回值校验失败仍属于服务端错误。
+        if (exception instanceof HandlerMethodValidationException validation && !validation.isForReturnValue()) {
+            return handleInvalidRequest(exception);
         }
         // 保留框架的404、405、415等状态和Allow等响应头，避免通用兜底把它们变成500。
         if (exception instanceof ErrorResponse error && !error.getStatusCode().is5xxServerError()) {
