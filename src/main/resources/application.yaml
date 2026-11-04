@@ -9,6 +9,12 @@ spring:
     url: "jdbc:mysql://${DB_HOST:192.168.5.29}:${DB_PORT:3306}/mall?serverTimezone=Asia/Shanghai&characterEncoding=UTF-8"
     username: ${DB_USERNAME:root}
     password: ${DB_PASSWORD:mysql}
+  data:
+    redis:
+      host: ${REDIS_HOST:192.168.5.29}
+      port: ${REDIS_PORT:6379}
+      database: ${REDIS_DATABASE:0}
+      timeout: ${REDIS_TIMEOUT:3s}
 jwt:
   secret: ${JWT_SECRET}
   expiration: ${JWT_EXPIRATION:2h}

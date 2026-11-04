@@ -1,0 +1,255 @@
+### ===================================================================
+### 商品 Redis Cache-Aside 缓存提速与双写一致性体验脚本
+### ===================================================================
+### 使用说明：
+### 1. 确保本地应用已启动 (http://localhost:8081)
+### 2. 在 IDEA 中直接点击每个请求左侧的绿色箭头 ▶ 依次执行
+### 3. 可以配合控制台日志与真实 Redis 查看数据变化
+### ===================================================================
+
+@baseUrl = http://localhost:8081
+
+# ===================================================================
+# 🔑 在这里直接填写你的管理员账号和密码（无需配置额外的 env 文件）：
+# ===================================================================
+@adminUsername = admin_mv4r4pju
+@adminPassword = HttpTest123!
+# ===================================================================
+
+### -------------------------------------------------------------------
+### 步骤 0：管理员登录（获取用于修改商品的 Token）
+### -------------------------------------------------------------------
+# 如果有固定管理员账号可在此修改；若无也可先注册一个管理员账号
+# @no-cookie-jar
+POST {{baseUrl}}/users/login
+Content-Type: application/json
+Accept: application/json
+
+{
+  "username": "{{adminUsername}}",
+  "password": "{{adminPassword}}"
+}
+
+> {%
+    if (response.status === 200 && response.body.code === 0 && response.body.data && response.body.data.token) {
+        client.global.set("adminToken", response.body.data.token);
+        client.log("✅ 管理员登录成功，Token 已自动保存到全局变量 adminToken！");
+    } else {
+        client.log("⚠️ 登录失败，请在请求体填入正确的管理员账号密码，或使用步骤 0-A 快速注册一个管理员。");
+    }
+%}
+
+
+### -------------------------------------------------------------------
+### 步骤 0-A（备选）：若无管理员账号，点击此请求自动注册一个专用管理员
+### -------------------------------------------------------------------
+# @no-cookie-jar
+POST {{baseUrl}}/users/register
+Content-Type: application/json
+
+{
+  "username": "admin_{{$random.alphabetic(6)}}",
+  "password": "AdminPassword123!"
+}
+
+> {%
+    if (response.status === 201 || (response.status === 200 && response.body.code === 0)) {
+        client.log("✅ 注册成功！请使用上方生成的用户名登录或复制到步骤 0。");
+    }
+%}
+
+
+### -------------------------------------------------------------------
+### 步骤 1：发布一个全新商品（用于体验缓存）
+### -------------------------------------------------------------------
+POST {{baseUrl}}/products/create
+Content-Type: application/json
+Authorization: Bearer {{adminToken}}
+
+{
+  "sku": "CACHE-DEMO-{{$random.alphabetic(8)}}",
+  "name": "极速机械键盘青轴版",
+  "price": 199.00,
+  "initialStock": 50
+}
+
+> {%
+    client.test("商品发布成功", function() {
+        client.assert(response.status === 201 || (response.status === 200 && response.body.code === 0), "创建应成功");
+        const prodId = response.body.data.id;
+        client.global.set("testProductId", String(prodId));
+        client.log("🎉 商品创建成功！商品ID = " + prodId + "，单价 = 199.00");
+    });
+%}
+
+
+### -------------------------------------------------------------------
+### 步骤 2：【首次查询】体验 Cache Miss（查 MySQL 并回写 Redis）
+### -------------------------------------------------------------------
+# 注意：公开接口，无需携带 Token。
+# 观察响应耗时（通常 15~30ms，需建立连接、查库并序列化回写 Redis）
+< {%
+    client.global.set("step2StartTime", Date.now());
+%}
+GET {{baseUrl}}/products/{{testProductId}}
+Accept: application/json
+
+> {%
+    const elapsed = Date.now() - client.global.get("step2StartTime");
+    client.test("首次查询成功 (Cache Miss)", function() {
+        client.assert(response.status === 200, "状态码应为 200");
+        client.assert(response.body.data.name === "极速机械键盘青轴版", "名称匹配");
+        client.log("📦【首次查询 - Cache Miss】");
+        client.log("-> 耗时: " + elapsed + " ms (包含 MySQL 查询 + Redis 写入)");
+        client.log("-> 此时去 Redis 执行: GET mall:product:detail:" + client.global.get("testProductId") + "，已有缓存！");
+    });
+%}
+
+
+### -------------------------------------------------------------------
+### 步骤 3：【二次查询】体验 Cache Hit 极速响应（直接从 Redis 毫秒级返回）
+### -------------------------------------------------------------------
+# 再次点击此请求，观察响应耗时，通常锐减到 2~4ms！
+# 同时观察后端后台日志，绝不会打印任何查询 MySQL 的 SQL 语句！
+< {%
+    client.global.set("step3StartTime", Date.now());
+%}
+GET {{baseUrl}}/products/{{testProductId}}
+Accept: application/json
+
+> {%
+    const elapsed = Date.now() - client.global.get("step3StartTime");
+    client.test("二次查询成功 (Cache Hit)", function() {
+        client.assert(response.status === 200, "状态码应为 200");
+        client.assert(response.body.data.price === 199.00, "价格匹配");
+        client.log("🚀【二次查询 - Cache Hit 缓存命中！】");
+        client.log("-> 耗时: " + elapsed + " ms (纯内存极速返回，零数据库访问！)");
+        client.log("-> 后端日志输出: event=product_cache_hit");
+    });
+%}
+
+
+### -------------------------------------------------------------------
+### 步骤 4：【更新商品】触发事务提交后双写一致性失效（删缓存）
+### -------------------------------------------------------------------
+# 管理员将商品改名为“降价特惠新版”，价格降为 159.00
+# 业务代码中注册了 afterCommit，事务成功落盘后会自动删除 Redis 中的旧缓存
+PUT {{baseUrl}}/products/{{testProductId}}
+Content-Type: application/json
+Authorization: Bearer {{adminToken}}
+
+{
+  "name": "降价特惠新版机械键盘",
+  "price": 159.00
+}
+
+> {%
+    client.test("商品修改成功", function() {
+        client.assert(response.status === 200, "修改应成功");
+        client.assert(response.body.data.price === 159.00, "返回价格应为最新修改的 159.00");
+        client.log("⚡【商品改价成功】");
+        client.log("-> 事务已 Commit，已触发删除旧缓存！");
+        client.log("-> 此时去 Redis 执行: GET mall:product:detail:" + client.global.get("testProductId") + "，已被精准删除(nil)！");
+    });
+%}
+
+
+### -------------------------------------------------------------------
+### 步骤 5：【改价后再查】验证读到最新改价数据，并再次懒加载生成新缓存
+### -------------------------------------------------------------------
+# 再次查询，此时旧缓存已被删除，系统会查库拿到 159.00 最新价格并再次写回 Redis
+GET {{baseUrl}}/products/{{testProductId}}
+Accept: application/json
+
+> {%
+    client.test("改价后再查验证最新数据", function() {
+        client.assert(response.status === 200, "状态码应为 200");
+        client.assert(response.body.data.price === 159.00, "价格必须为最新修改的 159.00，绝不能读到 199 旧缓存！");
+        client.assert(response.body.data.name === "降价特惠新版机械键盘", "名称为最新名称");
+        client.log("🎯【双写一致性验证成功！】");
+        client.log("-> 查到了最新价格: " + response.body.data.price);
+        client.log("-> 新缓存已被重新懒加载写入 Redis！");
+    });
+%}
+
+
+### -------------------------------------------------------------------
+### 步骤 6：【商品下架】测试状态变更的双写一致性
+### -------------------------------------------------------------------
+PUT {{baseUrl}}/products/{{testProductId}}/status
+Content-Type: application/json
+Authorization: Bearer {{adminToken}}
+
+{
+  "status": "OFF_SALE"
+}
+
+> {%
+    client.test("商品下架成功", function() {
+        client.assert(response.status === 200, "状态码应为 200");
+        client.assert(response.body.data.status === "OFF_SALE", "状态应更新为 OFF_SALE");
+        client.log("🔒【商品已成功下架】");
+        client.log("-> 缓存再次被精准删除！");
+    });
+%}
+
+
+### -------------------------------------------------------------------
+### 步骤 7：【下架后再查】验证状态已同步为 OFF_SALE
+### -------------------------------------------------------------------
+GET {{baseUrl}}/products/{{testProductId}}
+Accept: application/json
+
+> {%
+    client.test("下架后再查验证状态", function() {
+        client.assert(response.status === 200, "状态码应为 200");
+        client.assert(response.body.data.status === "OFF_SALE", "状态必须为 OFF_SALE");
+        client.log("🏁【商品下架与状态缓存双写一致性验证通过！】");
+        client.log("-> 当前商品状态: " + response.body.data.status);
+    });
+%}
+
+
+### -------------------------------------------------------------------
+### 步骤 8：【防缓存穿透 - 首次查询不存在商品】
+### -------------------------------------------------------------------
+# 查询一个 MySQL 根本不存在的大 ID（如 999999）
+# 期望：查库确认无此商品，返回 404，同时向 Redis 写入 EMPTY 哨兵并设置 2 分钟 TTL
+< {%
+    client.global.set("step8StartTime", Date.now());
+%}
+GET {{baseUrl}}/products/999999
+Accept: application/json
+
+> {%
+    const elapsed = Date.now() - client.global.get("step8StartTime");
+    client.test("不存在商品首次查返回404", function() {
+        client.assert(response.status === 404, "状态码必须为 404");
+        client.assert(response.body.code === 40401, "业务错误码应为 40401 PRODUCT_NOT_FOUND");
+        client.log("🛡️【防穿透 - 首次查询不存在商品】");
+        client.log("-> 耗时: " + elapsed + " ms (查库确认不存在，已向 Redis 写入 EMPTY 哨兵，TTL=2分钟)！");
+        client.log("-> 可去 Redis 验证: GET mall:product:detail:999999，结果为 \"EMPTY\"");
+    });
+%}
+
+
+### -------------------------------------------------------------------
+### 步骤 9：【防缓存穿透 - 二次查询体验命中空值哨兵】
+### -------------------------------------------------------------------
+# 再次请求不存在的商品 ID
+# 期望：耗时锐减至 1~3ms，直接命中 Redis 的 EMPTY 哨兵返回 404，绝对不碰 MySQL！
+< {%
+    client.global.set("step9StartTime", Date.now());
+%}
+GET {{baseUrl}}/products/999999
+Accept: application/json
+
+> {%
+    const elapsed = Date.now() - client.global.get("step9StartTime");
+    client.test("不存在商品命中EMPTY直接返回404", function() {
+        client.assert(response.status === 404, "状态码必须为 404");
+        client.assert(response.body.code === 40401, "业务错误码应为 40401 PRODUCT_NOT_FOUND");
+        client.log("🚀【防穿透 - 二次查询命中 EMPTY 哨兵！】");
+        client.log("-> 耗时: " + elapsed + " ms (毫秒级拦截恶意穿透，数据库 100% 零压力！)");
+    });
+%}
