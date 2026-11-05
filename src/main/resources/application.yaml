@@ -6,15 +6,24 @@ spring:
     log-request-details: false
   datasource:
     driver-class-name: com.mysql.cj.jdbc.Driver
-    url: "jdbc:mysql://${DB_HOST:192.168.5.29}:${DB_PORT:3306}/mall?serverTimezone=Asia/Shanghai&characterEncoding=UTF-8"
-    username: ${DB_USERNAME:root}
+    url: "jdbc:mysql://${DB_HOST:127.0.0.1}:${DB_PORT:3307}/mall?serverTimezone=Asia/Shanghai&characterEncoding=UTF-8"
+    username: ${DB_USERNAME:mall}
     password: ${DB_PASSWORD:mysql}
   data:
     redis:
-      host: ${REDIS_HOST:192.168.5.29}
-      port: ${REDIS_PORT:6379}
+      host: ${REDIS_HOST:127.0.0.1}
+      port: ${REDIS_PORT:6380}
       database: ${REDIS_DATABASE:0}
       timeout: ${REDIS_TIMEOUT:3s}
+  rabbitmq:
+    host: ${RABBITMQ_HOST:127.0.0.1}
+    port: ${RABBITMQ_PORT:5672}
+    username: ${RABBITMQ_USERNAME:mall}
+    password: ${RABBITMQ_PASSWORD:rabbitmq}
+    listener:
+      simple:
+        # 开启手动确认 (Manual ACK)，消费成功才通知 Broker 删消息，防消费中途丢单
+        acknowledge-mode: manual
 jwt:
   secret: ${JWT_SECRET}
   expiration: ${JWT_EXPIRATION:2h}

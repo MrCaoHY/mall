@@ -2,6 +2,7 @@ package com.chy.mall.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
+import com.chy.mall.config.RabbitMqConfig;
 import com.chy.mall.entity.OrderDo;
 import com.chy.mall.entity.OrderItemDo;
 import com.chy.mall.entity.ProductDo;
@@ -20,9 +21,13 @@ import com.chy.mall.vo.OrderItemVo;
 import com.chy.mall.vo.OrderVo;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.amqp.rabbit.core.RabbitTemplate;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
@@ -37,7 +42,6 @@ import java.util.stream.Collectors;
  * 独立Bean承载新订单事务，唯一键裁决、库存扣减和明细保存一起提交；异常先回滚再交回入口。
  */
 @Service
-@RequiredArgsConstructor
 @Slf4j
 public class OrderCreateTransactionService {
     private static final BigDecimal MAX_ORDER_AMOUNT = new BigDecimal("9999999999999999.99");
@@ -47,7 +51,30 @@ public class OrderCreateTransactionService {
     private final OrderMapper orderMapper;
     private final OrderItemMapper orderItemMapper;
     private final OrderOperationLogService operationLogService;
+    private final RabbitTemplate rabbitTemplate;
 
+    @Autowired
+    public OrderCreateTransactionService(ProductInventoryMapper productInventoryMapper,
+                                         ProductMapper productMapper,
+                                         OrderMapper orderMapper,
+                                         OrderItemMapper orderItemMapper,
+                                         OrderOperationLogService operationLogService,
+                                         RabbitTemplate rabbitTemplate) {
+        this.productInventoryMapper = productInventoryMapper;
+        this.productMapper = productMapper;
+        this.orderMapper = orderMapper;
+        this.orderItemMapper = orderItemMapper;
+        this.operationLogService = operationLogService;
+        this.rabbitTemplate = rabbitTemplate;
+    }
+    /** 兼容既有纯数据库单元测试的5参构造器（不依赖RabbitMQ） */
+    public OrderCreateTransactionService(ProductInventoryMapper productInventoryMapper,
+                                         ProductMapper productMapper,
+                                         OrderMapper orderMapper,
+                                         OrderItemMapper orderItemMapper,
+                                         OrderOperationLogService operationLogService) {
+        this(productInventoryMapper, productMapper, orderMapper, orderItemMapper, operationLogService, null);
+    }
     /** 新事务先写订单主表竞争幂等唯一键，胜出后再扣库存和保存快照。 */
     @Transactional(propagation = Propagation.REQUIRES_NEW, rollbackFor = Exception.class)
     public OrderVo createNewOrder(Long buyerId, String requestId, String requestFingerprint, TreeMap<Long, Integer> orderProductMap) {
@@ -135,6 +162,7 @@ public class OrderCreateTransactionService {
         }
         // 主表、库存、明细和CREATE流水必须一起提交，流水失败不能留下半张订单。
         operationLogService.recordOperation(order.getId(), buyerId, OrderOperationAction.CREATE, createTime);
+        sendDelayCloseMessageAfterCommit(order.getId());
         //构建返回vo
         OrderVo result = new OrderVo();
         result.setId(order.getId());
@@ -167,6 +195,32 @@ public class OrderCreateTransactionService {
     private void checkAmountRange(BigDecimal amount, String message) {
         if (amount.signum() <= 0 || amount.compareTo(MAX_ORDER_AMOUNT) > 0) {
             throw new BusinessException(ErrorCode.REQUEST_INVALID, message);
+        }
+    }
+    /** 注册事务同步回调，确保仅在订单主事务真正提交后才向MQ发送延迟消息。 */
+    private void sendDelayCloseMessageAfterCommit(Long id) {
+        if (rabbitTemplate == null) {
+            return;
+        }
+        if (TransactionSynchronizationManager.isSynchronizationActive()){
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+                public void afterCommit() {
+                sendDelayCloseMessage(id);
+            }
+            });
+        }else{
+            sendDelayCloseMessage(id);
+        }
+    }
+    /** 向延迟交换机投递订单ID，异常时仅记录脱敏告警，不影响已提交的下单结果。 */
+    private void sendDelayCloseMessage(Long orderId) {
+        try {
+            rabbitTemplate.convertAndSend(RabbitMqConfig.ORDER_DELAY_EXCHANGE, RabbitMqConfig.ORDER_DELAY_ROUTING_KEY, orderId
+            );
+            log.info("event=order_delay_message_sent orderId={}", orderId);
+        } catch (Exception e) {
+            log.error("event=order_delay_message_send_failed orderId={} error={}", orderId, LogSupport.safeStackTrace(e));
         }
     }
 }
