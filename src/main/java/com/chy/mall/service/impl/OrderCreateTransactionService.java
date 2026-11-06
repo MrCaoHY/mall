@@ -23,6 +23,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
@@ -30,6 +31,7 @@ import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.math.BigDecimal;
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
@@ -52,6 +54,10 @@ public class OrderCreateTransactionService {
     private final OrderItemMapper orderItemMapper;
     private final OrderOperationLogService operationLogService;
     private final RabbitTemplate rabbitTemplate;
+
+    /** 默认延迟关单时间（毫秒），默认30分钟 = 1800000ms；测试或实验时可通过配置缩短（如2000ms）。 */
+    @Value("${mall.order.close-delay-ms:1800000}")
+    private long orderCloseDelayMs = 1800000L;
 
     @Autowired
     public OrderCreateTransactionService(ProductInventoryMapper productInventoryMapper,
@@ -135,7 +141,7 @@ public class OrderCreateTransactionService {
         order.setRequestFingerprint(requestFingerprint);
         order.setStatus(OrderStatus.PENDING_PAYMENT);
         order.setTotalAmount(totalAmount);
-        order.setExpiresAt(createTime.plusMinutes(30));
+        order.setExpiresAt(createTime.plus(Duration.ofMillis(orderCloseDelayMs)));
         order.setCreatedAt(createTime);
         order.setUpdatedAt(createTime);
         if (orderMapper.insert(order) != 1 || order.getId() == null) {
@@ -216,7 +222,10 @@ public class OrderCreateTransactionService {
     /** 向延迟交换机投递订单ID，异常时仅记录脱敏告警，不影响已提交的下单结果。 */
     private void sendDelayCloseMessage(Long orderId) {
         try {
-            rabbitTemplate.convertAndSend(RabbitMqConfig.ORDER_DELAY_EXCHANGE, RabbitMqConfig.ORDER_DELAY_ROUTING_KEY, orderId
+            rabbitTemplate.convertAndSend(RabbitMqConfig.ORDER_DELAY_EXCHANGE, RabbitMqConfig.ORDER_DELAY_ROUTING_KEY, orderId,message -> {
+                message.getMessageProperties().setExpiration(String.valueOf(orderCloseDelayMs));
+                return message;
+                    }
             );
             log.info("event=order_delay_message_sent orderId={}", orderId);
         } catch (Exception e) {

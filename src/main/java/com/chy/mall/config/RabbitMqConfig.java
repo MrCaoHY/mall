@@ -18,8 +18,9 @@ public class RabbitMqConfig {
     public static final String ORDER_CLOSE_EXCHANGE = "order.close.exchange";
     public static final String ORDER_CLOSE_QUEUE = "order.close.queue";
     public static final String ORDER_CLOSE_ROUTING_KEY = "order.close.key";
-    @Value("${mall.order.close-delay-ms:1800000}")
-    private long orderCloseDelayMs;
+    /** 队列级最大兜底TTL（默认30分钟=1800000ms）；单笔订单实际延迟由消息expiration属性（mall.order.close-delay-ms）控制，避免修改配置时触发Broker队列参数冲突。 */
+    @Value("${mall.order.queue-max-ttl-ms:1800000}")
+    private long orderQueueMaxTtlMs;
 
     //死信交换机
     @Bean
@@ -54,7 +55,7 @@ public class RabbitMqConfig {
         Map<String, Object> args = new HashMap<>();
         args.put("x-dead-letter-exchange", ORDER_CLOSE_EXCHANGE);
         args.put("x-dead-letter-routing-key", ORDER_CLOSE_ROUTING_KEY);
-        args.put("x-message-ttl", orderCloseDelayMs);
+        args.put("x-message-ttl", orderQueueMaxTtlMs);
         return QueueBuilder.durable(ORDER_DELAY_QUEUE).withArguments(args).build();
     }
 

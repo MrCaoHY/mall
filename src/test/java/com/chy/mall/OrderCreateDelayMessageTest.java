@@ -6,7 +6,6 @@ import com.chy.mall.config.RabbitMqConfig;
 import com.chy.mall.entity.OrderDo;
 import com.chy.mall.entity.ProductDo;
 import com.chy.mall.entity.ProductInventoryDo;
-import com.chy.mall.enums.OrderOperationAction;
 import com.chy.mall.enums.OrderStatus;
 import com.chy.mall.enums.ProductStatus;
 import com.chy.mall.mapper.OrderItemMapper;
@@ -20,6 +19,10 @@ import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
+import org.springframework.amqp.core.Message;
+import org.springframework.amqp.core.MessagePostProcessor;
+import org.springframework.amqp.core.MessageProperties;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 
 import java.math.BigDecimal;
@@ -33,7 +36,7 @@ import static org.mockito.Mockito.*;
 
 /**
  * 订单创建延迟消息发送端单元测试：
- * 验证订单创建成功后向RabbitMQ延迟交换机发送延迟关单消息，
+ * 验证订单创建成功后向RabbitMQ延迟交换机发送带expiration的延迟关单消息，
  * 以及MQ发送异常时降级日志兜底、不破坏已提交订单。
  */
 class OrderCreateDelayMessageTest {
@@ -51,7 +54,7 @@ class OrderCreateDelayMessageTest {
     }
 
     @Test
-    @DisplayName("订单创建成功：向延迟交换机正确投递包含orderId的关单延迟消息")
+    @DisplayName("订单创建成功：向延迟交换机正确投递包含orderId及expiration的关单延迟消息")
     void createNewOrder_SendsDelayCloseMessageSuccessfully() {
         ProductInventoryMapper inventoryMapper = mock(ProductInventoryMapper.class);
         ProductMapper productMapper = mock(ProductMapper.class);
@@ -88,12 +91,18 @@ class OrderCreateDelayMessageTest {
         assertNotNull(orderVo);
         assertEquals(8888L, orderVo.getId());
 
-        // 验证向延迟交换机发送了 orderId=8888L 的消息
+        // 验证向延迟交换机发送了 orderId=8888L 的消息，并验证 MessagePostProcessor 设置了 expiration
+        ArgumentCaptor<MessagePostProcessor> processorCaptor = ArgumentCaptor.forClass(MessagePostProcessor.class);
         verify(rabbitTemplate, times(1)).convertAndSend(
                 eq(RabbitMqConfig.ORDER_DELAY_EXCHANGE),
                 eq(RabbitMqConfig.ORDER_DELAY_ROUTING_KEY),
-                eq(8888L)
+                eq(8888L),
+                processorCaptor.capture()
         );
+
+        Message dummyMessage = new Message(new byte[0], new MessageProperties());
+        processorCaptor.getValue().postProcessMessage(dummyMessage);
+        assertEquals("1800000", dummyMessage.getMessageProperties().getExpiration());
     }
 
     @Test
@@ -128,7 +137,7 @@ class OrderCreateDelayMessageTest {
 
         // 模拟RabbitMQ服务不可用抛异常
         doThrow(new RuntimeException("RabbitMQ Broker Connection Refused"))
-                .when(rabbitTemplate).convertAndSend(anyString(), anyString(), any(Object.class));
+                .when(rabbitTemplate).convertAndSend(anyString(), anyString(), any(Object.class), any(MessagePostProcessor.class));
 
         TreeMap<Long, Integer> productMap = new TreeMap<>();
         productMap.put(20L, 1);
@@ -138,6 +147,6 @@ class OrderCreateDelayMessageTest {
 
         assertNotNull(orderVo);
         assertEquals(9999L, orderVo.getId());
-        verify(rabbitTemplate, times(1)).convertAndSend(anyString(), anyString(), eq(9999L));
+        verify(rabbitTemplate, times(1)).convertAndSend(anyString(), anyString(), eq(9999L), any(MessagePostProcessor.class));
     }
 }
